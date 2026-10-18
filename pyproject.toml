@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jeonnector"
+version = "0.1.0"
+description = "전연결기(jeonnector) - 연결기 핀맵 설계 및 조회 프로그램"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6==6.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-qt>=4.4.0",
+]
+
+[project.scripts]
+jeonnector = "jeonnector.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
