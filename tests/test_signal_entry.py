@@ -14,12 +14,8 @@ from jeonnector.ui.signal_table import COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE
 
 @pytest.fixture
 def window(qtbot, tmp_path, monkeypatch):
-    # 사용자 창 배치와 최근 파일을 테스트에서 읽거나 덮어쓰지 않는다.
-    monkeypatch.setattr(MainWindow, "_restore_window_settings", lambda self: None)
-    monkeypatch.setattr(MainWindow, "_save_window_settings", lambda self: None)
-    monkeypatch.setattr(MainWindow, "recent_files", lambda self: [])
-    monkeypatch.setattr(MainWindow, "_add_recent_file", lambda self, path: None)
-    win = MainWindow(PartLibrary(storage_path=tmp_path / "parts.json"))
+    # 사용자 창 배치와 최근 파일은 conftest.py의 임시 설정 파일로 격리된다.
+    win =MainWindow(PartLibrary(storage_path=tmp_path / "parts.json"))
     def prepare_close(widget):
         widget.signal_table_panel.reset_draft()
         widget.mark_dirty(False)
