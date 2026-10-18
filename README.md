@@ -15,7 +15,10 @@
 ## 실행 및 테스트 방법
 
 ```powershell
-# 가상환경 활성화 후 실행
+# 실행 스크립트 사용 (가상환경 활성화 여부 확인 후 실행)
+.\run.ps1
+
+# 또는 직접 실행
 .\.venv\Scripts\python.exe -m jeonnector.main
 
 # 테스트 실행

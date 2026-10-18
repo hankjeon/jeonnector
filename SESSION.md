@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-- 2026-10-18: `docs/design.md` 요구사항 및 화면 설계에 맞춰 Python 가상환경(`.venv`) 구성, 의존성 선언(`pyproject.toml`, `requirements.txt`), 전연결기(`jeonnector`) 애플리케이션 전체 구현 및 단위·UI 통합 테스트 검증을 완료했다.
+- 2026-10-18: `docs/design.md` 요구사항 및 화면 설계에 맞춰 Python 가상환경(`.venv`) 구성, 의존성 선언(`pyproject.toml`, `requirements.txt`), 전연결기(`jeonnector`) 애플리케이션 전체 구현, 실행 스크립트(`run.ps1`) 작성 및 단위·UI 통합 테스트 검증을 완료했다.
 
 ## 완료 사항
 
