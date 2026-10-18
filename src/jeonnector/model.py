@@ -848,24 +848,6 @@ class ConnectorInstance:
             if row.signal_name == norm and row.pin_designator
         }
 
-    def pins_for_signal_type(self, signal_type: str) -> set[str]:
-        """특정 신호유형의 신호가 할당된 모든 핀 번호 집합."""
-        if not signal_type:
-            return set()
-        norm_type = normalize_signal_type_name(signal_type)
-        result: set[str] = set()
-        for row in self.rows:
-            if not row.pin_designator:
-                continue
-            sig = self.signals.get(row.signal_name)
-            if sig and sig.signal_type == norm_type:
-                result.add(row.pin_designator)
-        return result
-
-    def pins_for_category(self, category: str) -> set[str]:
-        """pins_for_signal_type의 별칭."""
-        return self.pins_for_signal_type(category)
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "connector_id": self.designator,

@@ -19,7 +19,11 @@ from jeonnector.model import (
 from jeonnector.storage import PartLibrary
 from jeonnector.ui.connector_editor import MODE_ADD_PIN, MODE_SELECT
 from jeonnector.ui.main_window import MainWindow
-from jeonnector.ui.pinmap_canvas import AURA_ALPHA, SELECTED_PIN_BORDER_WIDTH
+from jeonnector.ui.pinmap_canvas import (
+    AURA_ALPHA,
+    AURA_FALLBACK_COLOR,
+    SELECTED_PIN_BORDER_WIDTH,
+)
 from jeonnector.ui.signal_table import (
     COL_PIN,
     COL_SIGNAL,
@@ -139,41 +143,57 @@ def test_main_window_layout_and_workflow(
     assert win.signal_table_panel.apply_cell_edit(2, COL_PIN, "3")
     assert win.project.total_duplicate_pin_warnings() == 0
 
-    # 7. 핀 선택 시 동일 신호 굵은 외곽선, 같은 신호유형 주변 영역(Aura), 축소 시 생략 검증 (제3.4절, 제3.8절)
+    # 7. 핀 선택 시 선택한 핀만 굵은 외곽선, 동일 신호 핀들의 주변 영역(Aura) 검증 (제3.4절, 제3.8절)
+    def bold_items():
+        return [
+            item
+            for item in win.pinmap_panel.canvas.scene().items()
+            if hasattr(item, "pen")
+            and abs(item.pen().widthF() - SELECTED_PIN_BORDER_WIDTH) < 0.01
+        ]
+
+    def aura_items():
+        return [
+            item
+            for item in win.pinmap_panel.canvas.scene().items()
+            if hasattr(item, "brush")
+            and item.brush().color().alpha() == AURA_ALPHA
+        ]
+
+    def pin_center(designator):
+        pin = next(p for p in part_9p.pins if p.designator == designator)
+        return QPointF(pin.x, pin.y)
+
     win.pinmap_panel.canvas.zoom_by(2.5)
     win.pinmap_panel.canvas.select_pin("1", emit_signal=True)
     assert win.signal_table_panel.table.currentRow() == 0
 
-    bold_items = [
-        item
-        for item in win.pinmap_panel.canvas.scene().items()
-        if hasattr(item, "pen")
-        and abs(item.pen().widthF() - SELECTED_PIN_BORDER_WIDTH) < 0.01
-    ]
-    # GND가 할당된 1번 핀, 2번 핀 총 2개가 굵은 외곽선을 가져야 함
-    assert len(bold_items) == 2
+    # 같은 신호(GND)의 2번 핀은 원래 굵기를 유지하고 선택한 1번 핀만 굵은 외곽선
+    assert len(bold_items()) == 1
+    assert bold_items()[0].path().contains(pin_center("1"))
 
-    aura_items_zoomed_in = [
-        item
-        for item in win.pinmap_panel.canvas.scene().items()
-        if hasattr(item, "brush")
-        and item.brush().color().alpha() == AURA_ALPHA
-    ]
-    # 같은 신호유형 핀(1, 2번)의 주변 영역은 겹쳐도 진해지지 않도록 하나의 경로로 칠함
-    assert len(aura_items_zoomed_in) == 1
-    aura_path = aura_items_zoomed_in[0].path()
-    assert aura_path.fillRule() == Qt.FillRule.WindingFill
-    for designator in ("1", "2"):
-        pin = next(p for p in part_9p.pins if p.designator == designator)
-        assert aura_path.contains(QPointF(pin.x, pin.y))
+    # 동일 신호 핀(1, 2번)의 주변 영역은 겹쳐도 진해지지 않도록 하나의 경로로 칠하고 핀 채움 색상을 사용
+    assert len(aura_items()) == 1
+    aura_item = aura_items()[0]
+    assert aura_item.path().fillRule() == Qt.FillRule.WindingFill
+    assert aura_item.path().contains(pin_center("1"))
+    assert aura_item.path().contains(pin_center("2"))
+    assert not aura_item.path().contains(pin_center("3"))
+    expected_hex = win.project.effective_signal_color(conn, "GND")
+    assert aura_item.brush().color().name() == expected_hex.lower()
 
-    # 축소해서 핀 사이 공간이 좁아지면 주변 영역(Aura)이 생략되는지 확인
+    # 신호 색상과 신호유형 색상이 모두 '없음'인 신호(VCC_5V)는 회색 주변 영역 표시
+    win.pinmap_panel.canvas.select_pin("3", emit_signal=True)
+    assert len(aura_items()) == 1
+    assert aura_items()[0].path().contains(pin_center("3"))
+    assert aura_items()[0].brush().color().name() == AURA_FALLBACK_COLOR
+
+    # 축소해서 핀 사이 공간이 좁아져도 주변 영역을 생략하지 않음
     win.pinmap_panel.canvas.zoom_by(
         0.25 / win.pinmap_panel.canvas.current_zoom_scale
     )
-    assert not win.pinmap_panel.canvas.should_show_category_aura(
-        part_9p.min_pin_distance()
-    )
+    win.pinmap_panel.canvas.select_pin("1", emit_signal=True)
+    assert len(aura_items()) == 1
 
     # 모든 선 굵기가 확대/축소 비율에 비례하지 않는 cosmetic 펜인지 확인 (제3.4절)
     for item in win.pinmap_panel.canvas.scene().items():

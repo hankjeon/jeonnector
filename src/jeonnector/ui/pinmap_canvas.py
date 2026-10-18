@@ -32,6 +32,7 @@ from jeonnector.model import (
     DUPLICATE_PIN_COLOR,
     DUPLICATE_PIN_LABEL,
     EMPTY_PART_MESSAGE,
+    NO_COLOR_PIN_FILL,
     UNASSIGNED_PIN_COLOR,
     ConnectorInstance,
     ConnectorPart,
@@ -47,9 +48,9 @@ NORMAL_PIN_BORDER_WIDTH = 1.5
 SELECTED_PIN_BORDER_WIDTH = 3.8
 # 확대 시 핀의 화면상 지름(픽셀)이 이 값 이상이면 신호명을 함께 표시한다.
 SIGNAL_LABEL_MIN_SCREEN_PX = 20.0
-# 축소 시 인접 핀 외곽 사이 화면상 여유 공간(픽셀)이 이 값 미만이면 주변 영역 표시를 생략한다.
-AURA_MIN_GAP_SCREEN_PX = 6.0
 AURA_ALPHA = 68
+# 신호 색상과 신호유형 색상이 모두 '없음'인 신호의 주변 영역 색상
+AURA_FALLBACK_COLOR = "#94a3b8"
 MAX_INLINE_SIGNAL_CHARS = 12
 
 
@@ -373,27 +374,19 @@ class PinmapCanvas(QGraphicsView):
         menu = self.build_pin_context_menu(pin_designator)
         menu.exec(global_pos)
 
-    def _resolve_active_signal_and_type(self) -> tuple[str, str]:
-        """현재 선택된 핀으로부터 기준 신호명과 신호유형을 구한다."""
+    def _resolve_active_signal(self) -> str:
+        """현재 선택된 핀으로부터 기준 신호명을 구한다."""
         if self._connector is None or not self._selected_pin:
-            return "", ""
+            return ""
         first_idx = self._connector.first_row_index_for_pin(self._selected_pin)
         if first_idx is None:
-            return "", ""
-        sig_name = self._connector.rows[first_idx].signal_name
-        sig = self._connector.get_signal(sig_name)
-        return sig_name, (sig.signal_type if sig else "")
+            return ""
+        return self._connector.rows[first_idx].signal_name
 
     def should_show_signal_labels(self) -> bool:
         """핀맵 뷰가 충분히 확대되었는지 판단한다 (제3.4절)."""
         diameter = self._effective_pin_diameter()
         return (diameter * self.current_zoom_scale) >= SIGNAL_LABEL_MIN_SCREEN_PX
-
-    def should_show_category_aura(self, min_dist: float) -> bool:
-        """축소 상태에서 핀 사이 여유 공간이 충분한지 판단한다 (제3.4절)."""
-        diameter = self._effective_pin_diameter()
-        gap = max(min_dist - diameter, 0.0)
-        return (gap * self.current_zoom_scale) >= AURA_MIN_GAP_SCREEN_PX
 
     def redraw(self) -> None:
         """현재 연결기와 핀 할당·선택 상태를 캔버스에 다시 그린다."""
@@ -459,38 +452,35 @@ class PinmapCanvas(QGraphicsView):
                     outline_brush,
                 )
 
-        # 2. 선택 상태 및 신호유형 주변 영역(Aura) 표시 계산 (제3.4절)
-        active_signal, active_type = self._resolve_active_signal_and_type()
+        # 2. 선택한 핀과 동일한 신호가 할당된 핀들의 주변 영역(Aura) 표시 (제3.4절)
+        active_signal = self._resolve_active_signal()
         same_signal_pins = (
             self._connector.pins_for_signal(active_signal)
             if active_signal
             else set()
         )
-        same_type_pins = (
-            self._connector.pins_for_signal_type(active_type)
-            if active_type
-            else set()
-        )
 
         diameter = self._effective_pin_diameter()
         min_dist = self._part.min_pin_distance()
-        show_aura = bool(active_type) and self.should_show_category_aura(
-            min_dist
-        )
         aura_size = max(
             min(min_dist * 0.78, diameter * 1.9), diameter + 5.0
         )
 
-        if show_aura and self._project is not None:
-            type_hex = self._project.signal_type_color(active_type)
-            aura_color = QColor(type_hex if type_hex else "#94a3b8")
+        if same_signal_pins and self._project is not None:
+            # 핀 채움 색상(신호 색상 → 신호유형 색상)을 연하게 사용하고, 둘 다 '없음'이면 회색
+            aura_hex = self._project.effective_signal_color(
+                self._connector, active_signal
+            )
+            if aura_hex == NO_COLOR_PIN_FILL:
+                aura_hex = AURA_FALLBACK_COLOR
+            aura_color = QColor(aura_hex)
             aura_color.setAlpha(AURA_ALPHA)
             # 겹치는 주변 영역이 진해지지 않도록 하나의 경로로 합쳐 한 번만 칠한다.
             aura_path = QPainterPath()
             aura_path.setFillRule(Qt.FillRule.WindingFill)
 
             for pin in self._part.pins:
-                if pin.designator not in same_type_pins:
+                if pin.designator not in same_signal_pins:
                     continue
                 px = display_pin_x(pin.x, width, flip)
                 py = pin.y
@@ -523,10 +513,7 @@ class PinmapCanvas(QGraphicsView):
                 pin_shape=self._part.pin_shape,
                 row_indices=pin_to_rows.get(pin.designator, []),
                 is_duplicate=(pin.designator in dup_pins),
-                is_bold=(
-                    pin.designator == self._selected_pin
-                    or pin.designator in same_signal_pins
-                ),
+                is_bold=(pin.designator == self._selected_pin),
                 show_signal_labels=show_signal_labels,
             )
 
