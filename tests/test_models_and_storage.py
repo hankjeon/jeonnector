@@ -60,6 +60,27 @@ def test_default_27_parts_and_restore(tmp_path: Path) -> None:
     assert len(lib.list_parts()) == 27
 
 
+def test_default_parts_share_pin_proportion_and_outline_margin() -> None:
+    """기본 부품은 핀 간격·지름이 같고 외곽선이 핀 배열에서 일정 여백을 둔다 (제4.6절)."""
+    for part in create_default_parts():
+        assert part.pin_size == pytest.approx(16.0)
+        assert part.min_pin_distance() == pytest.approx(40.0, abs=0.05)
+        outline = part.graphics[0]
+        if outline.type == "CIRCLE":
+            g = outline.geometry
+            farthest = max(
+                ((p.x - g["cx"]) ** 2 + (p.y - g["cy"]) ** 2) ** 0.5 for p in part.pins
+            )
+            assert g["radius"] - farthest == pytest.approx(30.0, abs=0.05)
+            assert part.width == pytest.approx(2 * (g["radius"] + 12.0), abs=0.05)
+        else:
+            xs = [x for x, _ in outline.geometry["points"]]
+            ys = [y for _, y in outline.geometry["points"]]
+            assert min(p.x for p in part.pins) - min(xs) == pytest.approx(30.0)
+            assert max(ys) - max(p.y for p in part.pins) == pytest.approx(32.0, abs=0.05)
+            assert part.width == pytest.approx(max(xs) + 12.0, abs=0.05)
+
+
 def test_naming_and_pin_number_rules() -> None:
     """신호명·연결기 식별자, 신호유형 이름, 핀 번호 문자 규칙 및 대소문자 구분 검증 (제3.1, 3.6, 3.9, 3.10절)."""
     # 신호명 규칙: 영문자 시작, 영문 대문자·숫자·_, 대소문자 정규화, 32자 이하

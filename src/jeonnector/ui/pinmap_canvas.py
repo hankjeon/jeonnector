@@ -51,7 +51,7 @@ SIGNAL_LABEL_MIN_SCREEN_PX = 20.0
 AURA_ALPHA = 68
 # 신호 색상과 신호유형 색상이 모두 '없음'인 신호의 주변 영역 색상
 AURA_FALLBACK_COLOR = "#94a3b8"
-MAX_INLINE_SIGNAL_CHARS = 12
+MAX_INLINE_SIGNAL_CHARS = 10
 
 
 class ScrollableSignalMenu(QMenu):

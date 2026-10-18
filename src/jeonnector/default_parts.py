@@ -217,19 +217,28 @@ def _definition_id(family: str, variant: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"jeonnect/default-library/{family}/{variant}"))
 
 
+# 기본 부품 도식 비율 (docs/design.md 제4.6절): 가장 가까운 핀 중심 거리와 핀 지름을
+# 모든 부품에서 같게 두고, 외곽선은 핀 배열 경계에서 일정한 여백만큼 떨어뜨린다.
+PIN_PITCH = 40.0
+PIN_SIZE = 16.0
+SIDE_MARGIN = 30.0  # 핀 중심 → 좌우 외곽선 (끝 핀 신호명의 절반 폭)
+TOP_MARGIN = 22.0  # 핀 중심 → 위 외곽선
+BOTTOM_MARGIN = 32.0  # 핀 중심 → 아래 외곽선 (핀 아래 신호명)
+CIRCLE_MARGIN = 30.0  # 가장 바깥 핀 중심 → 원형 외곽선
+TRAPEZOID_INSET = 18.0  # 사다리꼴 아래 변의 좌우 들여쓰기
+FRAME = 12.0  # 외곽선 → 부품 경계
+
+
 def _build_dsub_layout(
     pin_count: int,
     starts: tuple[float, ...],
     counts: tuple[int, ...],
-    pitch: float = 24.0,
-    row_gap: float = 36.0,
+    row_gap: float,
     trapezoid: bool = True,
 ) -> tuple[float, float, list[PinDefinition], list[OutlineGraphic]]:
-    margin = 32.0
-    width = 2 * margin + max(
-        start + count - 1 for start, count in zip(starts, counts)
-    ) * pitch
-    height = 70.0 + row_gap * (len(counts) - 1)
+    span = max(start + count - 1 for start, count in zip(starts, counts)) * PIN_PITCH
+    width = 2 * (FRAME + SIDE_MARGIN) + span
+    height = 2 * FRAME + TOP_MARGIN + row_gap * (len(counts) - 1) + BOTTOM_MARGIN
     pins: list[PinDefinition] = []
     number = 1
     for row, (start, count) in enumerate(zip(starts, counts)):
@@ -237,36 +246,41 @@ def _build_dsub_layout(
             pins.append(
                 PinDefinition(
                     designator=str(number),
-                    x=round(margin + (start + column) * pitch, 2),
-                    y=round(35.0 + row * row_gap, 2),
+                    x=round(FRAME + SIDE_MARGIN + (start + column) * PIN_PITCH, 2),
+                    y=round(FRAME + TOP_MARGIN + row * row_gap, 2),
                     display_order=number,
                 )
             )
             number += 1
     assert number == pin_count + 1
-    bottom_inset = 25.0 if trapezoid else 12.0
+    inset = TRAPEZOID_INSET if trapezoid else 0.0
+    right, bottom = round(width - FRAME, 2), round(height - FRAME, 2)
     outline = OutlineGraphic(
         type="POLYGON",
         geometry={
             "points": [
-                [12.0, 12.0],
-                [round(width - 12.0, 2), 12.0],
-                [round(width - bottom_inset, 2), round(height - 12.0, 2)],
-                [bottom_inset, round(height - 12.0, 2)],
+                [FRAME, FRAME],
+                [right, FRAME],
+                [round(right - inset, 2), bottom],
+                [FRAME + inset, bottom],
             ]
         },
         display_order=0,
     )
-    return width, height, pins, [outline]
+    return round(width, 2), round(height, 2), pins, [outline]
 
 
 def _build_d38999_layout(
     contacts: list[list[int]],
 ) -> tuple[float, float, list[PinDefinition], list[OutlineGraphic]]:
-    width = height = 420.0
-    center = width / 2.0
-    maximum = max(math.hypot(x, y) for _, x, y in contacts)
-    scale = 178.0 / maximum
+    nearest = min(
+        math.dist(a[1:], b[1:])
+        for i, a in enumerate(contacts)
+        for b in contacts[i + 1 :]
+    )
+    scale = PIN_PITCH / nearest
+    radius = max(math.hypot(x, y) for _, x, y in contacts) * scale + CIRCLE_MARGIN
+    center = round(FRAME + radius, 2)
     pins = [
         PinDefinition(
             designator=str(number),
@@ -278,10 +292,10 @@ def _build_d38999_layout(
     ]
     outline = OutlineGraphic(
         type="CIRCLE",
-        geometry={"cx": center, "cy": center, "radius": 196.0},
+        geometry={"cx": center, "cy": center, "radius": round(radius, 2)},
         display_order=0,
     )
-    return width, height, pins, [outline]
+    return 2 * center, 2 * center, pins, [outline]
 
 
 def create_default_parts() -> list[ConnectorPart]:
@@ -297,8 +311,7 @@ def create_default_parts() -> list[ConnectorPart]:
             count,
             starts,
             rows,
-            pitch=30.0 if density == "SD" else 27.0,
-            row_gap=36.0 if density == "SD" else 30.0,
+            row_gap=48.0 if density == "SD" else 44.4,
         )
         parts.append(
             ConnectorPart(
@@ -310,6 +323,7 @@ def create_default_parts() -> list[ConnectorPart]:
                 height=height,
                 pins=pins,
                 graphics=graphics,
+                pin_size=PIN_SIZE,
             )
         )
 
@@ -331,6 +345,7 @@ def create_default_parts() -> list[ConnectorPart]:
                 height=height,
                 pins=pins,
                 graphics=graphics,
+                pin_size=PIN_SIZE,
             )
         )
 
@@ -344,8 +359,7 @@ def create_default_parts() -> list[ConnectorPart]:
             count,
             starts,
             rows,
-            pitch=18.0,
-            row_gap=28.0,
+            row_gap=62.2,
             trapezoid=len(rows) < 4,
         )
         parts.append(
@@ -358,6 +372,7 @@ def create_default_parts() -> list[ConnectorPart]:
                 height=height,
                 pins=pins,
                 graphics=graphics,
+                pin_size=PIN_SIZE,
             )
         )
 
