@@ -305,8 +305,10 @@ def test_narrow_pinmap_retains_controls(window, qtbot):
     qtbot.waitUntil(window.isVisible)
     panel = window.pinmap_panel
     assert panel.minimumSizeHint().width() <= 250
-    window.project_workspace.resizeDocks([window.signal_dock], [900], Qt.Orientation.Horizontal)
-    qtbot.waitUntil(lambda: panel.width() <= 280)
+    # 창 너비는 글꼴·플랫폼에 따라 달라지므로 신호표를 최대한 넓혀 핀맵을 최소 너비 근처까지 줄인다.
+    workspace = window.project_workspace
+    workspace.resizeDocks([window.signal_dock], [workspace.width()], Qt.Orientation.Horizontal)
+    qtbot.waitUntil(lambda: panel.width() <= panel.minimumSizeHint().width() + 20)
     for button in (panel.zoom_in_btn, panel.zoom_out_btn, panel.fit_btn, panel.flip_checkbox):
         assert button.isVisible()
         assert button.geometry().right() < panel.width()
