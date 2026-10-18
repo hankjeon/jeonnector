@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QDockWidget
 
@@ -159,7 +159,13 @@ def test_main_window_layout_and_workflow(
         if hasattr(item, "brush")
         and item.brush().color().alpha() == AURA_ALPHA
     ]
-    assert len(aura_items_zoomed_in) == 2
+    # 같은 신호유형 핀(1, 2번)의 주변 영역은 겹쳐도 진해지지 않도록 하나의 경로로 칠함
+    assert len(aura_items_zoomed_in) == 1
+    aura_path = aura_items_zoomed_in[0].path()
+    assert aura_path.fillRule() == Qt.FillRule.WindingFill
+    for designator in ("1", "2"):
+        pin = next(p for p in part_9p.pins if p.designator == designator)
+        assert aura_path.contains(QPointF(pin.x, pin.y))
 
     # 축소해서 핀 사이 공간이 좁아지면 주변 영역(Aura)이 생략되는지 확인
     win.pinmap_panel.canvas.zoom_by(

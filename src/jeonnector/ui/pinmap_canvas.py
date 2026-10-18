@@ -485,8 +485,9 @@ class PinmapCanvas(QGraphicsView):
             type_hex = self._project.signal_type_color(active_type)
             aura_color = QColor(type_hex if type_hex else "#94a3b8")
             aura_color.setAlpha(AURA_ALPHA)
-            no_pen = QPen(Qt.PenStyle.NoPen)
-            aura_brush = QBrush(aura_color)
+            # 겹치는 주변 영역이 진해지지 않도록 하나의 경로로 합쳐 한 번만 칠한다.
+            aura_path = QPainterPath()
+            aura_path.setFillRule(Qt.FillRule.WindingFill)
 
             for pin in self._part.pins:
                 if pin.designator not in same_type_pins:
@@ -500,9 +501,13 @@ class PinmapCanvas(QGraphicsView):
                     aura_size,
                 )
                 if pin_is_square(pin.designator, self._part.pin_shape):
-                    self._scene.addRect(aura_rect, no_pen, aura_brush)
+                    aura_path.addRect(aura_rect)
                 else:
-                    self._scene.addEllipse(aura_rect, no_pen, aura_brush)
+                    aura_path.addEllipse(aura_rect)
+
+            self._scene.addPath(
+                aura_path, QPen(Qt.PenStyle.NoPen), QBrush(aura_color)
+            )
 
         # 3. 개별 핀 도형, 핀 번호 및 확대 시 신호명 표시
         pin_to_rows = self._connector.pin_to_row_indices()
