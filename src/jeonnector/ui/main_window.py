@@ -298,7 +298,9 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
-        self.signal_table_panel = SignalTablePanel(self.project_workspace)
+        self.signal_table_panel = SignalTablePanel(
+            self.project_workspace, commands=self.commands,
+        )
         self.signal_dock.setWidget(self.signal_table_panel)
         self.project_workspace.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea, self.signal_dock
@@ -479,7 +481,9 @@ class MainWindow(QMainWindow):
             self.switch_to_project_view()
 
     def switch_to_editor_view(self) -> None:
-        """메인 화면에서 연결기 부품 편집기 화면으로 전환한다 (저장 여부를 묻지 않음, 제3.2절)."""
+        """미완료 신호 입력을 먼저 처리한 뒤 부품 편집기로 전환한다."""
+        if not self._resolve_signal_draft():
+            return
         self._editor_entry_part_snapshots = {
             p_uuid: part.clone() for p_uuid, part in self.project.parts.items()
         }
@@ -624,6 +628,21 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._syncing_sidebar:
             return
+        target = str(current.data(Qt.ItemDataRole.UserRole)) if current else None
+        old_connector = self.signal_table_panel.connector
+        if old_connector is not None and self.signal_table_panel.has_draft():
+            # 추가 확정의 데이터 변경 신호가 다른 연결기에 적용되지 않도록
+            # 기존 연결기를 선택한 상태에서 미완료 입력부터 처리한다.
+            self._syncing_sidebar = True
+            for i in range(self.connector_list.count()):
+                item = self.connector_list.item(i)
+                if item.data(Qt.ItemDataRole.UserRole) == old_connector.designator:
+                    self.connector_list.setCurrentItem(item)
+                    break
+            self._syncing_sidebar = False
+            if not self._resolve_signal_draft():
+                return
+            self._refresh_sidebar(select_designator=target)
         self._refresh_current_connector_views(reset_canvas_view=True)
 
     def _refresh_current_connector_views(
@@ -644,8 +663,10 @@ class MainWindow(QMainWindow):
         self,
         designator: str,
         part: ConnectorPart | None = None,
-    ) -> ConnectorInstance:
+    ) -> ConnectorInstance | None:
         """프로젝트에 연결기를 추가하고 사이드바에서 선택한다."""
+        if not self._resolve_signal_draft():
+            return None
         self.commands.add_connector(designator, part)
         conn = self.project.get_connector(designator)
         assert conn is not None
@@ -701,6 +722,8 @@ class MainWindow(QMainWindow):
         conn = self.current_connector
         if conn is None:
             return
+        if not self._resolve_signal_draft():
+            return
         ans = QMessageBox.question(
             self,
             "연결기 제거 확인",
@@ -729,6 +752,9 @@ class MainWindow(QMainWindow):
     def _on_part_change_requested(self, new_part_uuid: str) -> None:
         conn = self.current_connector
         if conn is None:
+            return
+        if not self._resolve_signal_draft():
+            self._refresh_current_connector_views()
             return
         new_part = (
             self.part_library.get_part(new_part_uuid)
@@ -813,6 +839,8 @@ class MainWindow(QMainWindow):
         - 프로젝트의 부품 사본이 부품 데이터베이스의 같은 UUID 부품과 다르면 자동으로 바꾸지 않고 알린다.
           사용자가 '갱신'을 선택한 경우에만 제3.3절 규칙대로 반영한다.
         """
+        if not self._resolve_signal_draft():
+            return False
         target = Path(path)
         try:
             loaded = load_project(target)
@@ -872,6 +900,8 @@ class MainWindow(QMainWindow):
         return self.save_project_to_path(self.current_file_path)
 
     def save_project_as_dialog(self) -> bool:
+        if not self._resolve_signal_draft():
+            return False
         default_name = (
             str(self.current_file_path)
             if self.current_file_path
@@ -891,6 +921,8 @@ class MainWindow(QMainWindow):
         return self.save_project_to_path(target)
 
     def save_project_to_path(self, path: str | Path) -> bool:
+        if not self._resolve_signal_draft():
+            return False
         target = Path(path)
         try:
             save_project(self.project, target)
@@ -913,6 +945,8 @@ class MainWindow(QMainWindow):
 
     def _confirm_discard_or_save(self) -> bool:
         """변경사항이 있는 상태에서 종료·새로 만들기·열기 시 저장 여부를 묻는다 (제3.2절)."""
+        if not self._resolve_signal_draft():
+            return False
         if not self.is_dirty:
             return True
         ans = QMessageBox.question(
@@ -927,6 +961,34 @@ class MainWindow(QMainWindow):
         if ans == QMessageBox.StandardButton.Save:
             return self.save_project_action()
         if ans == QMessageBox.StandardButton.Discard:
+            return True
+        return False
+
+    def _ask_draft_action(self) -> str:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("입력 중인 신호")
+        dialog.setText("신호표에 입력 중인 값이 있습니다. 먼저 처리 방법을 선택하세요.")
+        add = dialog.addButton("추가", QMessageBox.ButtonRole.AcceptRole)
+        discard = dialog.addButton("버리기", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.setEscapeButton(cancel)
+        dialog.exec()
+        if dialog.clickedButton() == add:
+            return "add"
+        if dialog.clickedButton() == discard:
+            return "discard"
+        return "cancel"
+
+    def _resolve_signal_draft(self) -> bool:
+        panel = self.signal_table_panel
+        if not panel.has_draft():
+            return True
+        action = self._ask_draft_action()
+        if action == "add":
+            return panel.commit_draft()
+        if action == "discard":
+            panel.reset_draft()
             return True
         return False
 

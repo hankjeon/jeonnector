@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import QModelIndex, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
     QComboBox,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
+    QPushButton,
+    QSizePolicy,
     QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
@@ -19,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from jeonnector.commands import CommandDispatcher
 from jeonnector.model import (
     DUPLICATE_CELL_BG_COLOR,
     ConnectorInstance,
@@ -36,6 +42,17 @@ COL_SIGNAL = 1
 COL_SIGNAL_TYPE = 2
 COL_CATEGORY = 2  # 하위 호환 별칭
 COL_COLOR = 3
+COL_ACTION = 4
+
+
+@dataclass
+class SignalDraft:
+    """프로젝트에 반영하기 전인 신호 입력값."""
+
+    pin: str = ""
+    name: str = ""
+    signal_type: str = ""
+    color: str = ""
 
 
 class EditableComboDelegate(QStyledItemDelegate):
@@ -62,7 +79,7 @@ class EditableComboDelegate(QStyledItemDelegate):
             if part is not None:
                 for pin_des in part.pin_designators():
                     combo.addItem(pin_des)
-            # 신호명 없이 핀 번호만 입력할 수 없으며, 부품이 없는 연결기에서도 입력 불가
+            # 새 입력 행에는 별도 콤보 박스를 사용한다.
             if conn is None or row >= len(conn.rows) or part is None:
                 combo.setEnabled(False)
         elif col == COL_SIGNAL:
@@ -118,7 +135,10 @@ class SignalTablePanel(QWidget):
     pinSelectionChanged = Signal(str)
     statusMessage = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None,
+        commands: CommandDispatcher | None = None,
+    ) -> None:
         super().__init__(parent)
         self.project: Project | None = None
         self.connector: ConnectorInstance | None = None
@@ -126,20 +146,24 @@ class SignalTablePanel(QWidget):
         self._syncing = False
         self._sort_column: str = "pin"
         self._sort_descending: bool = False
+        self.commands = commands
+        self.draft = SignalDraft()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         self.info_label = QLabel(
-            "신호표 (마지막 빈 행에 신호명 입력 시 신호 생성 · 행 헤더 우클릭으로 삭제 · 열 헤더 클릭으로 정렬)"
+            "마지막 행에 입력 후 추가(Ctrl+Enter) · 행 헤더 우클릭으로 삭제 · 열 헤더로 정렬"
         )
+        self.info_label.setWordWrap(True)
+        self.info_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.info_label.setStyleSheet("color: #475569; font-size: 11px;")
         layout.addWidget(self.info_label)
 
-        self.table = SignalTableWidget(0, 4, self)
+        self.table = SignalTableWidget(0, 5, self)
         self.table.setHorizontalHeaderLabels(
-            ["핀 번호", "신호명", "신호유형", "색상"]
+            ["핀 번호", "신호명", "신호유형", "색상", "입력"]
         )
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -174,6 +198,7 @@ class SignalTablePanel(QWidget):
         self.table.setColumnWidth(COL_PIN, 95)
         self.table.setColumnWidth(COL_SIGNAL_TYPE, 130)
         self.table.setColumnWidth(COL_COLOR, 110)
+        self.table.setColumnWidth(COL_ACTION, 140)
 
         # 행 헤더(제일 좌측 핸들 영역) 선택 및 우클릭 컨텍스트 메뉴 설정 (제3.6절)
         v_header = self.table.verticalHeader()
@@ -200,6 +225,156 @@ class SignalTablePanel(QWidget):
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         layout.addWidget(self.table, 1)
+        self.add_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self.add_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.add_shortcut.activated.connect(self.commit_draft)
+        self.add_keypad_shortcut = QShortcut(QKeySequence("Ctrl+Enter"), self)
+        self.add_keypad_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.add_keypad_shortcut.activated.connect(self.commit_draft)
+
+    def has_draft(self) -> bool:
+        return any((self.draft.pin, self.draft.name, self.draft.signal_type, self.draft.color))
+
+    def reset_draft(self) -> None:
+        self.draft = SignalDraft()
+        self.refresh_table(preserve_row_id="draft")
+
+    def _make_draft_combo(self, items: list[str], value: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(1)
+        combo.addItems(items)
+        combo.setEditText(value)
+        return combo
+
+    def _render_draft(self, row: int) -> None:
+        # 실제 데이터에는 등록하지 않은 입력값을 갱신·정렬 사이에도 유지한다.
+        self.draft_pin_combo = self._make_draft_combo(
+            ["미할당"] + (self.part.pin_designators() if self.part else []),
+            self.draft.pin or "미할당",
+        )
+        self.draft_pin_combo.setEnabled(self.part is not None)
+        self.draft_name_combo = self._make_draft_combo(
+            self.connector.signal_names(), self.draft.name,
+        )
+        self.draft_type_combo = self._make_draft_combo(
+            ["없음"] + sorted(self.project.signal_types, key=natural_sort_key),
+            self.draft.signal_type or "없음",
+        )
+        self.draft_color_button = QPushButton(self.draft.color or "없음")
+        self.draft_color_button.setToolTip("개별 색상 선택 · 우클릭으로 없음")
+        self.draft_color_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.draft_color_button.clicked.connect(self._pick_draft_color)
+        self.draft_color_button.customContextMenuRequested.connect(self._draft_color_menu)
+        self.add_button = QPushButton("추가")
+        self.reset_button = QPushButton("초기화")
+        self.add_button.clicked.connect(self.commit_draft)
+        self.reset_button.clicked.connect(self.reset_draft)
+        actions = QWidget()
+        buttons = QHBoxLayout(actions)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(2)
+        buttons.addWidget(self.add_button)
+        buttons.addWidget(self.reset_button)
+        for col, widget in enumerate((
+            self.draft_pin_combo, self.draft_name_combo, self.draft_type_combo,
+            self.draft_color_button, actions,
+        )):
+            self.table.setCellWidget(row, col, widget)
+        self.draft_pin_combo.currentTextChanged.connect(
+            lambda text: setattr(self.draft, "pin", "" if text == "미할당" else text)
+        )
+        self.draft_name_combo.currentTextChanged.connect(self._draft_name_changed)
+        self.draft_type_combo.currentTextChanged.connect(
+            lambda text: setattr(self.draft, "signal_type", "" if text == "없음" else text)
+        )
+        self._update_draft_attributes()
+        QWidget.setTabOrder(self.draft_pin_combo, self.draft_name_combo)
+        QWidget.setTabOrder(self.draft_name_combo, self.draft_type_combo)
+        QWidget.setTabOrder(self.draft_type_combo, self.draft_color_button)
+        QWidget.setTabOrder(self.draft_color_button, self.add_button)
+        QWidget.setTabOrder(self.add_button, self.reset_button)
+
+    def _draft_name_changed(self, text: str) -> None:
+        self.draft.name = text
+        self._update_draft_attributes()
+
+    def _update_draft_attributes(self) -> None:
+        signal = self.connector.get_signal(self.draft.name) if self.connector else None
+        if signal:
+            self.draft.signal_type = signal.signal_type
+            self.draft.color = signal.color
+        self.draft_type_combo.blockSignals(True)
+        self.draft_type_combo.setEditText(self.draft.signal_type or "없음")
+        self.draft_type_combo.blockSignals(False)
+        self.draft_type_combo.setEnabled(signal is None)
+        self.draft_color_button.setEnabled(signal is None)
+        self.draft_color_button.setText(self.draft.color or "없음")
+        self.draft_color_button.setStyleSheet(
+            f"background-color: {self.draft.color};" if self.draft.color else ""
+        )
+
+    def _pick_draft_color(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self.draft.color or "#ffffff"), self, "새 신호 색상")
+        if chosen.isValid():
+            self.draft.color = chosen.name()
+            self._update_draft_attributes()
+
+    def _draft_color_menu(self, pos) -> None:
+        menu = QMenu(self)
+        clear = menu.addAction("색상 없음 (신호유형 색상 사용)")
+        if menu.exec(self.draft_color_button.mapToGlobal(pos)) == clear:
+            self.draft.color = ""
+            self._update_draft_attributes()
+
+    def _draft_error(self, message: str, widget: QWidget) -> bool:
+        self.statusMessage.emit(message)
+        widget.setToolTip(message)
+        widget.setStyleSheet("border: 1px solid #dc2626;")
+        widget.setFocus()
+        return False
+
+    def commit_draft(self) -> bool:
+        if self.connector is None or self.project is None:
+            return False
+        if not is_valid_signal_name(self.draft.name):
+            return self._draft_error(
+                "신호명은 영문자로 시작하는 영문·숫자·밑줄 32자 이내로 입력하세요.",
+                self.draft_name_combo,
+            )
+        if not self.connector.validate_pin_designator(self.draft.pin, self.part):
+            return self._draft_error("현재 부품에 존재하는 핀 번호를 선택하세요.", self.draft_pin_combo)
+        existing = self.connector.get_signal(self.draft.name)
+        if (not existing and self.draft.signal_type
+                and not is_valid_signal_type_name(self.draft.signal_type)):
+            return self._draft_error("유효한 신호유형 이름을 입력하세요.", self.draft_type_combo)
+        name = normalize_signal_name(self.draft.name)
+        pin = self.draft.pin
+
+        def add() -> bool:
+            if not self.connector.add_signal_row(
+                name, pin, self.part, self.draft.signal_type, self.draft.color,
+            ):
+                return False
+            if not existing and self.draft.signal_type:
+                self.project.ensure_signal_type(self.draft.signal_type)
+            return True
+
+        if self.commands:
+            success = self.commands.execute(f"신호 행 추가: {name}", add)
+        else:
+            success = add()
+        if not success:
+            return False
+        row_id = next((r.row_id for r in self.connector.rows
+                       if r.signal_name == name and r.pin_designator == pin), "")
+        self.draft = SignalDraft()
+        self.refresh_table(preserve_row_id=row_id)
+        self.dataChanged.emit()
+        self._emit_current_row_pin_selection(self.table.currentRow())
+        return True
 
     def set_context(
         self,
@@ -208,6 +383,9 @@ class SignalTablePanel(QWidget):
         part: ConnectorPart | None,
     ) -> None:
         switching_connector = connector is not self.connector
+        if switching_connector:
+            self.draft = SignalDraft()
+            self.table.clearContents()
         self.project = project
         self.connector = connector
         self.part = part
@@ -218,7 +396,6 @@ class SignalTablePanel(QWidget):
             self.table.horizontalHeader().setSortIndicator(
                 COL_PIN, Qt.SortOrder.AscendingOrder
             )
-            self.connector.sort_rows("pin", descending=False)
         self.refresh_table()
 
     def sort_by_column(self, col: int, descending: bool | None = None) -> None:
@@ -251,27 +428,32 @@ class SignalTablePanel(QWidget):
             else Qt.SortOrder.AscendingOrder
         )
         self.table.horizontalHeader().setSortIndicator(col, order)
-        self.connector.sort_rows(
-            self._sort_column, descending=self._sort_descending
-        )
         self.refresh_table()
 
     def _on_header_clicked(self, logical_index: int) -> None:
         if logical_index in (COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE):
             self.sort_by_column(logical_index)
 
-    def refresh_table(self, preserve_row: int | None = None) -> None:
+    def refresh_table(
+        self, preserve_row: int | None = None,
+        preserve_row_id: str | None = None,
+    ) -> None:
         """연결기의 신호 행 목록과 마지막 입력용 빈 행을 표에 렌더링한다."""
         self._syncing = True
         try:
-            if preserve_row is None:
-                preserve_row = self.table.currentRow()
-
             if self.connector is None or self.project is None:
                 self.table.setRowCount(0)
                 self.table.setEnabled(False)
                 return
 
+            if preserve_row_id is None:
+                if preserve_row is not None and 0 <= preserve_row < len(self.connector.rows):
+                    preserve_row_id = self.connector.rows[preserve_row].row_id
+                else:
+                    selected = (self.table.item(self.table.currentRow(), COL_SIGNAL)
+                                if self.table.selectedItems() else None)
+                    preserve_row_id = selected.data(Qt.ItemDataRole.UserRole) if selected else None
+            self.connector.sort_rows(self._sort_column, self._sort_descending)
             self.table.setEnabled(True)
             rows = self.connector.rows
             dup_rows = self.connector.duplicate_row_indices()
@@ -283,6 +465,14 @@ class SignalTablePanel(QWidget):
             ]
             header_labels.append("+")
             self.table.setVerticalHeaderLabels(header_labels)
+
+            # 이전 마지막 행의 입력 위젯이 데이터 행으로 남지 않도록 제거한다.
+            for r_idx in range(total_rows):
+                for col in range(self.table.columnCount()):
+                    widget = self.table.cellWidget(r_idx, col)
+                    if widget is not None:
+                        widget.hide()
+                        self.table.removeCellWidget(r_idx, col)
 
             for r_idx, sig_row in enumerate(rows):
                 sig_def = self.connector.get_signal(sig_row.signal_name)
@@ -315,6 +505,7 @@ class SignalTablePanel(QWidget):
 
                 # 1. 신호명 셀
                 sig_item = QTableWidgetItem(sig_row.signal_name)
+                sig_item.setData(Qt.ItemDataRole.UserRole, sig_row.row_id)
                 self.table.setItem(r_idx, COL_SIGNAL, sig_item)
 
                 # 2. 신호유형 셀
@@ -347,23 +538,25 @@ class SignalTablePanel(QWidget):
                     QBrush(QColor("#ffffff" if lum < 145 else "#0f172a"))
                 )
                 self.table.setItem(r_idx, COL_COLOR, color_item)
+                action_item = QTableWidgetItem("")
+                action_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(r_idx, COL_ACTION, action_item)
 
             # 마지막 입력용 빈 행 설정 (제3.6절)
             blank_idx = len(rows)
-            for col in (COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE, COL_COLOR):
+            for col in range(self.table.columnCount()):
                 blank_item = QTableWidgetItem("")
-                if col == COL_SIGNAL:
-                    blank_item.setToolTip(
-                        "여기에 신호명을 입력하거나 선택하면 새 신호 행이 추가됩니다."
-                    )
-                else:
-                    blank_item.setFlags(
-                        Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-                    )
+                blank_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                blank_item.setData(Qt.ItemDataRole.UserRole, "draft")
                 self.table.setItem(blank_idx, col, blank_item)
-
-            if preserve_row is not None and 0 <= preserve_row < total_rows:
-                self.table.selectRow(preserve_row)
+            self._render_draft(blank_idx)
+            target = next((i for i, r in enumerate(rows) if r.row_id == preserve_row_id), -1)
+            if preserve_row_id == "draft":
+                target = blank_idx
+            self.table.clearSelection()
+            self.table.setCurrentCell(target, COL_SIGNAL)
+            if target >= 0:
+                self.table.selectRow(target)
         finally:
             self._syncing = False
 
@@ -372,7 +565,23 @@ class SignalTablePanel(QWidget):
         if self._syncing or self.connector is None or self.project is None:
             return False
 
-        is_blank_row = row >= len(self.connector.rows)
+        if row < 0 or row > len(self.connector.rows):
+            return False
+        is_blank_row = row == len(self.connector.rows)
+        if is_blank_row:
+            field = {
+                COL_PIN: "pin", COL_SIGNAL: "name",
+                COL_SIGNAL_TYPE: "signal_type", COL_COLOR: "color",
+            }.get(col)
+            if field is None:
+                return False
+            if col in (COL_SIGNAL_TYPE, COL_COLOR) and self.connector.get_signal(self.draft.name):
+                return False
+            value = "" if text in ("미할당", "없음") else text
+            setattr(self.draft, field, value)
+            self.refresh_table(preserve_row_id="draft")
+            return True
+        row_id = self.connector.rows[row].row_id
 
         if col == COL_SIGNAL:
             cleaned = text.strip()
@@ -393,15 +602,10 @@ class SignalTablePanel(QWidget):
             sig = self.connector.get_signal(norm_sig)
             if sig and sig.signal_type:
                 self.project.ensure_signal_type(sig.signal_type)
-            next_row = min(row, max(len(self.connector.rows) - 1, 0))
-            self.refresh_table(preserve_row=next_row)
+            self.refresh_table(preserve_row_id=row_id)
             self.dataChanged.emit()
-            self._emit_current_row_pin_selection(next_row)
+            self._emit_current_row_pin_selection(self.table.currentRow())
             return True
-
-        if is_blank_row:
-            self.refresh_table(preserve_row=row)
-            return False
 
         if col == COL_PIN:
             raw_pin = "" if text == "미할당" else text
@@ -418,10 +622,9 @@ class SignalTablePanel(QWidget):
                 return False
 
             self.connector.set_row_pin(row, raw_pin, self.part)
-            next_row = min(row, max(len(self.connector.rows) - 1, 0))
-            self.refresh_table(preserve_row=next_row)
+            self.refresh_table(preserve_row_id=row_id)
             self.dataChanged.emit()
-            self._emit_current_row_pin_selection(next_row)
+            self._emit_current_row_pin_selection(self.table.currentRow())
             return True
 
         if col == COL_SIGNAL_TYPE:
@@ -429,9 +632,9 @@ class SignalTablePanel(QWidget):
             sig_name = self.connector.rows[row].signal_name
             if cleaned in ("", "없음", "(없음)"):
                 self.connector.set_signal_type(sig_name, "")
-                self.refresh_table(preserve_row=row)
+                self.refresh_table(preserve_row_id=row_id)
                 self.dataChanged.emit()
-                self._emit_current_row_pin_selection(row)
+                self._emit_current_row_pin_selection(self.table.currentRow())
                 return True
 
             if not is_valid_signal_type_name(cleaned):
@@ -445,9 +648,9 @@ class SignalTablePanel(QWidget):
 
             norm_type = self.project.ensure_signal_type(cleaned)
             self.connector.set_signal_type(sig_name, norm_type)
-            self.refresh_table(preserve_row=row)
+            self.refresh_table(preserve_row_id=row_id)
             self.dataChanged.emit()
-            self._emit_current_row_pin_selection(row)
+            self._emit_current_row_pin_selection(self.table.currentRow())
             return True
 
         return False

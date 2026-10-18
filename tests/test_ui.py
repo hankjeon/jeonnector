@@ -78,18 +78,22 @@ def test_main_window_layout_and_workflow(
     assert win.pinmap_panel.face_badge_label.text() == "정면"
     assert win.signal_table_panel.table.rowCount() == 1
 
-    # 4. 신호 입력 및 핀 할당 (제3.6절 행 규칙에 맞춰 신호 생성 후 핀 번호 할당)
+    # 4. 핀 번호부터 입력하고 추가 버튼 동작으로 함께 확정
+    assert win.signal_table_panel.apply_cell_edit(0, COL_PIN, "1")
     assert win.signal_table_panel.apply_cell_edit(0, COL_SIGNAL, "gnd")
+    assert not conn.rows
+    assert win.signal_table_panel.commit_draft()
     assert len(conn.rows) == 1
     assert conn.rows[0].signal_name == "GND"
     assert win.signal_table_panel.table.rowCount() == 2
-    assert win.signal_table_panel.apply_cell_edit(0, COL_PIN, "1")
 
     # 두 번째 행에 GND 추가 후 2번 핀 할당, 세 번째 행에 VCC_5V 추가 후 2번 핀 중복 할당
     assert win.signal_table_panel.apply_cell_edit(1, COL_SIGNAL, "GND")
     assert win.signal_table_panel.apply_cell_edit(1, COL_PIN, "2")
+    assert win.signal_table_panel.commit_draft()
     assert win.signal_table_panel.apply_cell_edit(2, COL_SIGNAL, "VCC_5V")
     assert win.signal_table_panel.apply_cell_edit(2, COL_PIN, "2")
+    assert win.signal_table_panel.commit_draft()
     assert len(conn.rows) == 3
     assert win.signal_table_panel.table.rowCount() == 4
 

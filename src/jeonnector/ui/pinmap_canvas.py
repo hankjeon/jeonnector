@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -641,6 +642,31 @@ class PinmapCanvas(QGraphicsView):
             )
 
 
+class ElidedLabel(QLabel):
+    """좁은 패널에서 전체 이름이 최소 너비를 강제하지 않는 제목."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._full_text = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text
+        self.setToolTip(text)
+        self._elide()
+
+    def _elide(self) -> None:
+        super().setText(self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, max(0, self.width()),
+        ))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+
 class PinmapPanel(QWidget):
     """상단 헤더 바(연결기 정보, 부품 선택·변경, 좌우 반전과 정면/배면 표시, 전체 보기)와 핀맵 캔버스를 포함하는 패널 (제3.5절, 제4.1절)."""
 
@@ -662,24 +688,32 @@ class PinmapPanel(QWidget):
         header_bar.setContentsMargins(4, 2, 4, 2)
         header_bar.setSpacing(8)
 
-        self.connector_title_label = QLabel("연결기 미선택")
+        self.connector_title_label = ElidedLabel("연결기 미선택")
         self.connector_title_label.setStyleSheet(
             "font-weight: bold; font-size: 13px; color: #0f172a;"
         )
         header_bar.addWidget(self.connector_title_label)
 
-        header_bar.addSpacing(8)
+        # 제목, 부품 선택, 조작을 나누어 넓은 한 줄이 최소 폭을 강제하지 않게 한다.
+        part_bar = QHBoxLayout()
+        part_bar.setSpacing(4)
         self.part_action_label = QLabel("부품 선택:")
-        header_bar.addWidget(self.part_action_label)
+        part_bar.addWidget(self.part_action_label)
 
         self.part_combo = QComboBox()
-        self.part_combo.setMinimumWidth(220)
+        self.part_combo.setMinimumWidth(0)
+        self.part_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.part_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.part_combo.setMinimumContentsLength(2)
+        self.part_combo.currentTextChanged.connect(self.part_combo.setToolTip)
         self.part_combo.currentIndexChanged.connect(self._on_part_combo_changed)
-        header_bar.addWidget(self.part_combo)
+        part_bar.addWidget(self.part_combo, 1)
 
+        controls = QHBoxLayout()
+        controls.setSpacing(4)
         self.flip_checkbox = QCheckBox("좌우 반전")
         self.flip_checkbox.toggled.connect(self._on_flip_toggled)
-        header_bar.addWidget(self.flip_checkbox)
+        controls.addWidget(self.flip_checkbox)
 
         self.face_badge_label = QLabel("정면")
         self.face_badge_label.setStyleSheet(
@@ -687,18 +721,26 @@ class PinmapPanel(QWidget):
         )
         header_bar.addWidget(self.face_badge_label)
 
-        header_bar.addStretch(1)
+        controls.addStretch(1)
 
-        self.zoom_in_btn = QPushButton("확대 (+)")
-        self.zoom_out_btn = QPushButton("축소 (-)")
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_out_btn = QPushButton("−")
+        self.zoom_in_btn.setToolTip("확대 (+)")
+        self.zoom_out_btn.setToolTip("축소 (-)")
+        self.zoom_in_btn.setFixedWidth(28)
+        self.zoom_out_btn.setFixedWidth(28)
         self.fit_btn = QPushButton("전체 보기")
-        header_bar.addWidget(self.zoom_in_btn)
-        header_bar.addWidget(self.zoom_out_btn)
-        header_bar.addWidget(self.fit_btn)
+        controls.addWidget(self.zoom_in_btn)
+        controls.addWidget(self.zoom_out_btn)
+        controls.addWidget(self.fit_btn)
 
         layout.addLayout(header_bar)
+        layout.addLayout(part_bar)
+        layout.addLayout(controls)
 
         self.canvas = PinmapCanvas(self)
+        self.canvas.setMinimumSize(0, 0)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.canvas, 1)
 
         self.zoom_in_btn.clicked.connect(lambda: self.canvas.zoom_by(1.2))

@@ -484,6 +484,31 @@ class ConnectorInstance:
         self.enforce_row_rules(allow_pending_unassigned_row_id=pending_id)
         return True
 
+    def add_signal_row(
+        self, signal_name: str, pin_designator: str,
+        part: ConnectorPart | None, signal_type: str = "", color: str = "",
+    ) -> bool:
+        """입력 중인 행을 모두 검증한 뒤 신호와 할당을 함께 추가한다."""
+        if not is_valid_signal_name(signal_name):
+            return False
+        if not self.validate_pin_designator(pin_designator, part):
+            return False
+        name = normalize_signal_name(signal_name)
+        if name not in self.signals:
+            if signal_type and not is_valid_signal_type_name(signal_type):
+                return False
+            self.signals[name] = SignalDefinition(
+                name=name,
+                signal_type=normalize_signal_type_name(signal_type),
+                color=color,
+            )
+        self.rows.append(SignalRow(
+            signal_name=name,
+            pin_designator="" if pin_designator == "미할당" else pin_designator,
+        ))
+        self.enforce_row_rules()
+        return True
+
     def rename_shared_signal(self, old_name: str, new_name: str) -> bool:
         """같은 신호를 사용하는 모든 행의 신호명을 일괄 변경할 때 사용하는 헬퍼."""
         if not is_valid_signal_name(new_name):
