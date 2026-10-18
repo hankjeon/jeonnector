@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from jeonnector.default_parts import (
+    PIN_PITCH,
     generate_circular_pins,
     generate_grid_pins,
 )
@@ -74,6 +75,8 @@ MODE_DRAW_POLYGON = "DRAW_POLYGON"
 MODE_DRAW_CIRCLE = "DRAW_CIRCLE"
 
 EDITOR_PIN_DIAMETER = 15.0
+# 기본 부품 핀 간격의 1/4: 엇갈린 행이 있어도 기본 부품 핀의 가로 위치가 격자에 맞는다 (제4.5절).
+DEFAULT_GRID_SPACING = PIN_PITCH / 4.0
 MIN_GRID_SCREEN_PX = 6.0
 HANDLE_SCREEN_PX = 8.0
 
@@ -1075,7 +1078,7 @@ class ConnectorEditorWidget(QMainWindow):
         self.grid_spacing_spin = QDoubleSpinBox()
         self.grid_spacing_spin.setRange(0.5, 200.0)
         self.grid_spacing_spin.setSingleStep(1.0)
-        self.grid_spacing_spin.setValue(6.0)
+        self.grid_spacing_spin.setValue(DEFAULT_GRID_SPACING)
         self.grid_spacing_spin.valueChanged.connect(
             lambda: self.canvas.viewport().update()
         )

@@ -12,12 +12,18 @@ from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QDockWidget
 
+from jeonnector.default_parts import create_default_parts
 from jeonnector.model import (
     DUPLICATE_CELL_BG_COLOR,
     EMPTY_PART_MESSAGE,
 )
 from jeonnector.storage import PartLibrary
-from jeonnector.ui.connector_editor import MODE_ADD_PIN, MODE_SELECT
+from jeonnector.ui.connector_editor import (
+    DEFAULT_GRID_SPACING,
+    MODE_ADD_PIN,
+    MODE_SELECT,
+    snap_coord,
+)
 from jeonnector.ui.main_window import MainWindow
 from jeonnector.ui.pinmap_canvas import (
     AURA_ALPHA,
@@ -248,6 +254,7 @@ def test_main_window_layout_and_workflow(
     assert win.stack.currentIndex() == 1
     assert win.editor_widget.is_grid_visible()
     assert win.editor_widget.is_snap_active()
+    assert win.editor_widget.grid_spacing == pytest.approx(DEFAULT_GRID_SPACING)
 
     initial_pin_count = win.editor_widget.current_part.pin_count
     win.editor_widget.activate_tool_mode(MODE_ADD_PIN)
@@ -272,3 +279,13 @@ def test_main_window_layout_and_workflow(
     assert win.load_project_from_path(proj_file)
     assert len(win.project.connectors) == 1
     win.close()
+
+
+def test_default_grid_aligns_with_default_row_pin_columns() -> None:
+    """기본 그리드 간격(핀 간격의 1/4)에서 D-SUB·Micro-D 기본 부품 핀의 가로 위치가 격자에 맞는다 (제4.5절)."""
+    assert DEFAULT_GRID_SPACING == pytest.approx(10.0)
+    for part in create_default_parts():
+        if part.family == "D38999 Series IV":
+            continue
+        for pin in part.pins:
+            assert snap_coord(pin.x, part.width / 2.0, DEFAULT_GRID_SPACING) == pytest.approx(pin.x)
