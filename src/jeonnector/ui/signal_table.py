@@ -55,6 +55,18 @@ def color_cell_label(individual_color: str, type_color: str) -> tuple[str, str]:
     return "없음", "색상 없음"
 
 
+UNASSIGNED_TEXT = "미할당"
+NO_TYPE_TEXT = "없음"
+
+
+def use_blank_placeholder(combo: QComboBox, placeholder: str) -> None:
+    """빈칸일 때 회색 안내 글자를 보이고, 드롭다운에서 안내 항목을 고르면 빈칸으로 둔다 (제3.9절)."""
+    combo.lineEdit().setPlaceholderText(placeholder)
+    combo.textActivated.connect(
+        lambda text: combo.setEditText("") if text == placeholder else None
+    )
+
+
 def readable_text_color(background: QColor) -> str:
     luminance = (
         0.299 * background.red()
@@ -94,7 +106,8 @@ class EditableComboDelegate(QStyledItemDelegate):
 
         if col == COL_PIN:
             # 제3.9절: 드롭다운 첫 항목에 '미할당'을 두고 핀 번호를 자연 정렬로 표시
-            combo.addItem("미할당")
+            combo.addItem(UNASSIGNED_TEXT)
+            use_blank_placeholder(combo, UNASSIGNED_TEXT)
             if part is not None:
                 for pin_des in part.pin_designators():
                     combo.addItem(pin_des)
@@ -106,7 +119,8 @@ class EditableComboDelegate(QStyledItemDelegate):
                 for sig_name in conn.signal_names():
                     combo.addItem(sig_name)
         elif col == COL_SIGNAL_TYPE:
-            combo.addItem("없음")
+            combo.addItem(NO_TYPE_TEXT)
+            use_blank_placeholder(combo, NO_TYPE_TEXT)
             if project is not None:
                 for type_name in sorted(
                     project.signal_types.keys(), key=natural_sort_key
@@ -119,12 +133,9 @@ class EditableComboDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor: QWidget, index: QModelIndex) -> None:  # noqa: N802
         if isinstance(editor, QComboBox):
+            # 미할당 핀·신호유형 없음은 빈칸(회색 안내 글자)으로 시작해 입력이 이어 붙지 않게 한다.
             current_text = str(index.data(Qt.ItemDataRole.EditRole) or "")
-            if index.column() == COL_PIN and not current_text:
-                current_text = "미할당"
-            elif index.column() == COL_SIGNAL_TYPE and not current_text:
-                current_text = "없음"
-            idx = editor.findText(current_text)
+            idx = editor.findText(current_text) if current_text else -1
             if idx >= 0:
                 editor.setCurrentIndex(idx)
             editor.setEditText(current_text)
@@ -272,17 +283,19 @@ class SignalTablePanel(QWidget):
     def _render_draft(self, row: int) -> None:
         # 실제 데이터에는 등록하지 않은 입력값을 갱신·정렬 사이에도 유지한다.
         self.draft_pin_combo = self._make_draft_combo(
-            ["미할당"] + (self.part.pin_designators() if self.part else []),
-            self.draft.pin or "미할당",
+            [UNASSIGNED_TEXT] + (self.part.pin_designators() if self.part else []),
+            self.draft.pin,
         )
+        use_blank_placeholder(self.draft_pin_combo, UNASSIGNED_TEXT)
         self.draft_pin_combo.setEnabled(self.part is not None)
         self.draft_name_combo = self._make_draft_combo(
             self.connector.signal_names(), self.draft.name,
         )
         self.draft_type_combo = self._make_draft_combo(
-            ["없음"] + sorted(self.project.signal_types, key=natural_sort_key),
-            self.draft.signal_type or "없음",
+            [NO_TYPE_TEXT] + sorted(self.project.signal_types, key=natural_sort_key),
+            self.draft.signal_type,
         )
+        use_blank_placeholder(self.draft_type_combo, NO_TYPE_TEXT)
         self.draft_color_button = QPushButton()
         self.draft_color_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.draft_color_button.clicked.connect(self._pick_draft_color)
@@ -303,7 +316,7 @@ class SignalTablePanel(QWidget):
         )):
             self.table.setCellWidget(row, col, widget)
         self.draft_pin_combo.currentTextChanged.connect(
-            lambda text: setattr(self.draft, "pin", "" if text == "미할당" else text)
+            lambda text: setattr(self.draft, "pin", "" if text == UNASSIGNED_TEXT else text)
         )
         self.draft_name_combo.currentTextChanged.connect(self._draft_name_changed)
         self.draft_type_combo.currentTextChanged.connect(self._draft_type_changed)
@@ -343,7 +356,7 @@ class SignalTablePanel(QWidget):
         self.commit_draft()
 
     def _draft_type_changed(self, text: str) -> None:
-        self.draft.signal_type = "" if text == "없음" else text
+        self.draft.signal_type = "" if text == NO_TYPE_TEXT else text
         self._update_draft_color_button()
 
     def _draft_name_changed(self, text: str) -> None:
@@ -356,7 +369,7 @@ class SignalTablePanel(QWidget):
             self.draft.signal_type = signal.signal_type
             self.draft.color = signal.color
         self.draft_type_combo.blockSignals(True)
-        self.draft_type_combo.setEditText(self.draft.signal_type or "없음")
+        self.draft_type_combo.setEditText(self.draft.signal_type)
         self.draft_type_combo.blockSignals(False)
         self.draft_type_combo.setEnabled(signal is None)
         self.draft_color_button.setEnabled(signal is None)

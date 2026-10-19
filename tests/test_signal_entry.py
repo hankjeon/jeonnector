@@ -176,7 +176,6 @@ def test_keyboard_tab_enter_and_existing_cell_edit(window, qtbot):
     assert panel.draft_name_combo.hasFocus()
     # 핀 번호 칸에서 신호명 없이 Enter를 누르면 오류 없이 신호명 칸으로 이동한다.
     panel.draft_pin_combo.setFocus()
-    panel.draft_pin_combo.lineEdit().selectAll()
     qtbot.keyClicks(panel.draft_pin_combo.lineEdit(), "3")
     qtbot.keyClick(panel.draft_pin_combo.lineEdit(), Qt.Key.Key_Return)
     qtbot.waitUntil(panel.draft_name_combo.hasFocus)
@@ -367,3 +366,29 @@ def test_sidebar_shows_identifier_and_context_menu(window):
     item = window.connector_list.item(0)
     assert item.text() == "⚠ J1"
     assert item.toolTip() == "신호 중복 1건"
+
+
+def test_unassigned_pin_and_no_type_start_blank(window, qtbot):
+    window.show()
+    qtbot.waitUntil(window.isActiveWindow)
+    panel = window.signal_table_panel
+    for combo, placeholder in ((panel.draft_pin_combo, "미할당"), (panel.draft_type_combo, "없음")):
+        assert combo.currentText() == ""
+        assert combo.lineEdit().placeholderText() == placeholder
+    panel.draft_type_combo.setEditText("전원")  # QTest는 한글 키 입력을 지원하지 않는다.
+    assert panel.draft.signal_type == "전원"
+    panel.draft_type_combo.textActivated.emit("없음")
+    assert panel.draft_type_combo.currentText() == "" and panel.draft.signal_type == ""
+
+    add(panel, "SPARE")
+    row = next(i for i, r in enumerate(window.current_connector.rows) if r.signal_name == "SPARE")
+    assert panel.table.item(row, COL_PIN).text() == ""
+    panel.table.setCurrentCell(row, COL_PIN)
+    panel.table.editItem(panel.table.item(row, COL_PIN))
+    editor = QApplication.focusWidget()
+    if not isinstance(editor, QComboBox):
+        editor = editor.parentWidget()
+    assert editor.currentText() == "" and editor.lineEdit().placeholderText() == "미할당"
+    qtbot.keyClicks(editor.lineEdit(), "4")
+    qtbot.keyClick(editor, Qt.Key.Key_Tab)
+    qtbot.waitUntil(lambda: ("SPARE", "4") in rows(window))
