@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication, QDockWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDockWidget,
+    QGraphicsEllipseItem,
+    QGraphicsLineItem,
+)
 
 from jeonnector.default_parts import create_default_parts
 from jeonnector.model import (
@@ -20,6 +25,7 @@ from jeonnector.ui.connector_editor import (
     AutoPlacementDialog,
     MODE_ADD_PIN,
     MODE_SELECT,
+    polygon_center,
     snap_coord,
 )
 from jeonnector.ui.main_window import MainWindow
@@ -289,6 +295,21 @@ def test_default_grid_aligns_with_default_row_pin_columns() -> None:
             assert snap_coord(pin.x, part.width / 2.0, DEFAULT_GRID_SPACING) == pytest.approx(pin.x)
 
 
+def _has_center_handle(canvas, x: float, y: float) -> bool:
+    """(x, y)에 원과 가로·세로 십자선이 겹친 가운데 핸들이 그려졌는지 확인한다."""
+    items = canvas.scene().items()
+    has_circle = any(
+        isinstance(item, QGraphicsEllipseItem)
+        and item.rect().center() == QPointF(x, y)
+        and item.pen().color().name() == "#ea580c"
+        for item in items
+    )
+    lines = [item.line() for item in items if isinstance(item, QGraphicsLineItem)]
+    has_h = any(ln.y1() == ln.y2() == y and ln.center() == QPointF(x, y) for ln in lines)
+    has_v = any(ln.x1() == ln.x2() == x and ln.center() == QPointF(x, y) for ln in lines)
+    return has_circle and has_h and has_v
+
+
 def test_editor_new_part_outline_tools_and_snap(qapp: QApplication, tmp_path: Path) -> None:
     """새 부품 빈 시작, 자동 배치 기본값, 외곽 즉시 생성, 영역 자동 맞춤, 스냅에 맞추기 (제4.4~4.5절)."""
     lib = PartLibrary(storage_path=tmp_path / "editor_lib.json")
@@ -313,9 +334,13 @@ def test_editor_new_part_outline_tools_and_snap(qapp: QApplication, tmp_path: Pa
     assert min(x for x, _ in points) == pytest.approx(min(p.x for p in part.pins) - 30.0)
     assert part.width == pytest.approx(max(x for x, _ in points) - min(x for x, _ in points) + 24.0)
     assert [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins] == pytest.approx(center_offsets)
+    center = polygon_center(points)
+    assert _has_center_handle(editor.canvas, center.x(), center.y())
 
     editor.create_circle_outline()
     assert part.graphics[0].type == "CIRCLE"
+    geom = part.graphics[0].geometry
+    assert _has_center_handle(editor.canvas, geom["cx"], geom["cy"])
     assert part.width == pytest.approx(2 * (part.graphics[0].geometry["radius"] + 12.0))
 
     part.pins[0].x += 3.0

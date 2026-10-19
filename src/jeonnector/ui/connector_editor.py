@@ -729,6 +729,24 @@ class EditorCanvas(QGraphicsView):
         painter.drawLine(QPointF(cx, 0.0), QPointF(cx, part.height))
         painter.drawLine(QPointF(0.0, cy), QPointF(part.width, cy))
 
+    def _add_square_handle(
+        self, x: float, y: float, size: float, pen: QPen, brush: QBrush
+    ) -> None:
+        """꼭짓점·반지름 핸들(정사각형)."""
+        self._scene.addRect(
+            QRectF(x - size / 2.0, y - size / 2.0, size, size), pen, brush
+        )
+
+    def _add_center_handle(
+        self, x: float, y: float, size: float, pen: QPen, brush: QBrush
+    ) -> None:
+        """가운데·중심 이동 핸들(원에 십자선이 겹친 모양)."""
+        half = size / 2.0
+        arm = size * 0.8
+        self._scene.addEllipse(QRectF(x - half, y - half, size, size), pen, brush)
+        self._scene.addLine(x - arm, y, x + arm, y, pen)
+        self._scene.addLine(x, y - arm, x, y + arm, pen)
+
     def redraw(self) -> None:
         self._scene.clear()
         part = self.editor.current_part
@@ -758,20 +776,15 @@ class EditorCanvas(QGraphicsView):
                     self._scene.addPolygon(
                         poly, outline_pen, QBrush(Qt.BrushStyle.NoBrush)
                     )
-                    handle_points = [(float(pt[0]), float(pt[1])) for pt in pts]
-                    center = polygon_center(pts)
-                    handle_points.append((center.x(), center.y()))
-                    for hx, hy in handle_points:
-                        self._scene.addRect(
-                            QRectF(
-                                hx - handle_size / 2.0,
-                                hy - handle_size / 2.0,
-                                handle_size,
-                                handle_size,
-                            ),
-                            handle_pen,
-                            handle_brush,
+                    for pt in pts:
+                        self._add_square_handle(
+                            float(pt[0]), float(pt[1]),
+                            handle_size, handle_pen, handle_brush,
                         )
+                    center = polygon_center(pts)
+                    self._add_center_handle(
+                        center.x(), center.y(), handle_size, handle_pen, handle_brush
+                    )
             elif g_type == "CIRCLE":
                 cx = float(geom.get("cx", part.width / 2.0))
                 cy = float(geom.get("cy", part.height / 2.0))
@@ -781,17 +794,10 @@ class EditorCanvas(QGraphicsView):
                     outline_pen,
                     QBrush(Qt.BrushStyle.NoBrush),
                 )
-                for hx, hy in ((cx, cy), (cx + r, cy)):
-                    self._scene.addRect(
-                        QRectF(
-                            hx - handle_size / 2.0,
-                            hy - handle_size / 2.0,
-                            handle_size,
-                            handle_size,
-                        ),
-                        handle_pen,
-                        handle_brush,
-                    )
+                self._add_center_handle(cx, cy, handle_size, handle_pen, handle_brush)
+                self._add_square_handle(
+                    cx + r, cy, handle_size, handle_pen, handle_brush
+                )
 
         # 2. 핀 표시 (부품 단위의 핀 모양·크기 반영, 제4.4절)
         pin_diameter = (
