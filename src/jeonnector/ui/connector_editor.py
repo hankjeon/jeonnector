@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QFont,
     QGuiApplication,
     QPainter,
-    QPainterPath,
     QPen,
     QPolygonF,
 )
@@ -55,6 +54,7 @@ from PySide6.QtWidgets import (
 
 from jeonnector.default_parts import (
     PIN_PITCH,
+    PIN_SIZE,
     generate_circular_pins,
     generate_grid_pins,
 )
@@ -66,26 +66,38 @@ from jeonnector.model import (
     natural_sort_key,
     pin_is_square,
 )
+from jeonnector.part_geometry import (
+    fit_part_area,
+    fitted_circle_outline,
+    fitted_polygon_outline,
+    snap_coord,
+    snap_part_to_grid,
+)
 from jeonnector.storage import PartLibrary, export_parts, read_parts_file
 
 MODE_SELECT = "SELECT"
 MODE_ADD_PIN = "ADD_PIN"
-MODE_DRAW_RECT = "DRAW_RECT"
-MODE_DRAW_POLYGON = "DRAW_POLYGON"
-MODE_DRAW_CIRCLE = "DRAW_CIRCLE"
 
 EDITOR_PIN_DIAMETER = 15.0
 # 기본 부품 핀 간격의 1/4: 엇갈린 행이 있어도 기본 부품 핀의 가로 위치가 격자에 맞는다 (제4.5절).
 DEFAULT_GRID_SPACING = PIN_PITCH / 4.0
 MIN_GRID_SCREEN_PX = 6.0
 HANDLE_SCREEN_PX = 8.0
+SELECT_MODE_HINT = (
+    "도구 모드: 선택 / 이동 — 핀이나 외곽 핸들을 드래그해 이동합니다 "
+    "(다각형: 변 더블클릭 꼭짓점 추가 · 꼭짓점 우클릭 삭제 · 가운데 핸들 전체 이동)"
+)
+NEW_PART_WIDTH = 400.0
+NEW_PART_HEIGHT = 300.0
 
 
-def snap_coord(value: float, center: float, spacing: float) -> float:
-    """영역 중심(center)을 원점으로 하여 가장 가까운 그리드 격자 좌표를 반환한다."""
-    if spacing <= 0:
-        return round(value, 3)
-    return round(center + round((value - center) / spacing) * spacing, 3)
+def polygon_center(points: list[list[float]]) -> QPointF | None:
+    """다각형 외곽 전체 이동 핸들 위치(꼭짓점 경계 상자의 중심)."""
+    if not points:
+        return None
+    xs = [float(pt[0]) for pt in points]
+    ys = [float(pt[1]) for pt in points]
+    return QPointF((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
 
 def next_pin_designator(existing: list[str]) -> str:
@@ -134,12 +146,12 @@ class AutoPlacementDialog(QDialog):
 
         self.pitch_x_spin = QDoubleSpinBox()
         self.pitch_x_spin.setRange(2.0, 200.0)
-        self.pitch_x_spin.setValue(24.0)
+        self.pitch_x_spin.setValue(PIN_PITCH)
         grid_form.addRow("가로 핀 간격 (Pitch X):", self.pitch_x_spin)
 
         self.pitch_y_spin = QDoubleSpinBox()
         self.pitch_y_spin.setRange(2.0, 200.0)
-        self.pitch_y_spin.setValue(30.0)
+        self.pitch_y_spin.setValue(48.0)
         grid_form.addRow("세로 열 간격 (Pitch Y):", self.pitch_y_spin)
 
         self.stagger_check = QCheckBox("짝수/홀수 행 반피치 엇갈림 배치")
@@ -282,15 +294,13 @@ class EditorCanvas(QGraphicsView):
         # 드래그 상태
         self._dragging_pin_index: int = -1
         self._dragging_handle: tuple[str, int] | None = None
-        # ("poly_vertex", idx) | ("circle_center", 0) | ("circle_radius", 0)
+        # ("poly_vertex", idx) | ("poly_center", 0) | ("circle_center", 0) | ("circle_radius", 0)
         self._panning = False
         self._space_pressed = False
         self._pan_start = QPointF()
 
-        # CAD 작도 상태 (마우스 프리뷰용)
+        # 핀 찍기 미리보기용 커서 위치
         self._cursor_scene_pos = QPointF(100.0, 60.0)
-        self._draw_start_point: QPointF | None = None
-        self._polygon_draft_points: list[QPointF] = []
 
     @property
     def current_zoom_scale(self) -> float:
@@ -298,8 +308,6 @@ class EditorCanvas(QGraphicsView):
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
-        self._draw_start_point = None
-        self._polygon_draft_points.clear()
         self._dragging_pin_index = -1
         self._dragging_handle = None
         if mode == MODE_SELECT:
@@ -350,23 +358,9 @@ class EditorCanvas(QGraphicsView):
     def keyPressEvent(self, event) -> None:  # noqa: N802
         key = event.key()
         if key == Qt.Key.Key_Escape:
-            if (
-                self.mode == MODE_DRAW_POLYGON
-                and len(self._polygon_draft_points) >= 3
-            ):
-                self._commit_polygon_draft()
             self.editor.activate_tool_mode(MODE_SELECT)
             event.accept()
             return
-        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if (
-                self.mode == MODE_DRAW_POLYGON
-                and len(self._polygon_draft_points) >= 3
-            ):
-                self._commit_polygon_draft()
-                self.editor.activate_tool_mode(MODE_SELECT)
-                event.accept()
-                return
         if key == Qt.Key.Key_Space:
             self._space_pressed = True
             self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -414,6 +408,13 @@ class EditorCanvas(QGraphicsView):
                     and abs(scene_pos.y() - float(pt[1])) <= tol
                 ):
                     return ("poly_vertex", idx)
+            center = polygon_center(pts)
+            if (
+                center is not None
+                and abs(scene_pos.x() - center.x()) <= tol
+                and abs(scene_pos.y() - center.y()) <= tol
+            ):
+                return ("poly_center", 0)
         elif g.type.upper() == "CIRCLE":
             cx = float(g.geometry.get("cx", part.width / 2.0))
             cy = float(g.geometry.get("cy", part.height / 2.0))
@@ -462,12 +463,6 @@ class EditorCanvas(QGraphicsView):
 
         # 우클릭 처리
         if event.button() == Qt.MouseButton.RightButton:
-            if self.mode == MODE_DRAW_POLYGON:
-                if len(self._polygon_draft_points) >= 3:
-                    self._commit_polygon_draft()
-                self.editor.activate_tool_mode(MODE_SELECT)
-                event.accept()
-                return
             if self.mode != MODE_SELECT:
                 self.editor.activate_tool_mode(MODE_SELECT)
                 event.accept()
@@ -510,30 +505,12 @@ class EditorCanvas(QGraphicsView):
                 event.accept()
                 return
 
-            if self.mode in (MODE_DRAW_RECT, MODE_DRAW_CIRCLE):
-                if self._draw_start_point is None:
-                    self._draw_start_point = snapped
-                else:
-                    if self.mode == MODE_DRAW_RECT:
-                        self._commit_rect_outline(self._draw_start_point, snapped)
-                    else:
-                        self._commit_circle_outline(
-                            self._draw_start_point, snapped
-                        )
-                    self._draw_start_point = None
-                    self.editor.activate_tool_mode(MODE_SELECT)
-                self.redraw()
-                event.accept()
-                return
-
-            if self.mode == MODE_DRAW_POLYGON:
-                self._polygon_draft_points.append(snapped)
-                self.redraw()
-                event.accept()
-                return
-
             # MODE_SELECT: 외곽 핸들 우선 판정 -> 핀 판정 -> 빈 공간 패닝
+            # 가운데 이동 핸들이 핀과 겹치면 핀을 우선한다.
             handle = self._hit_test_handle(raw_scene_pos)
+            if handle is not None and handle[0] in ("poly_center", "circle_center"):
+                if self._hit_test_pin(raw_scene_pos) >= 0:
+                    handle = None
             if handle is not None:
                 self._dragging_handle = handle
                 event.accept()
@@ -563,15 +540,6 @@ class EditorCanvas(QGraphicsView):
         if part is None:
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            if (
-                self.mode == MODE_DRAW_POLYGON
-                and len(self._polygon_draft_points) >= 3
-            ):
-                self._commit_polygon_draft()
-                self.editor.activate_tool_mode(MODE_SELECT)
-                event.accept()
-                return
-
             # 선택 모드에서 다각형 외곽 변(선분)을 더블클릭하면 꼭짓점 추가
             if self.mode == MODE_SELECT and part.graphics:
                 g = part.graphics[0]
@@ -669,6 +637,17 @@ class EditorCanvas(QGraphicsView):
                             round(snapped.y(), 2),
                         ]
                         self.redraw()
+                elif role == "poly_center" and g.type.upper() == "POLYGON":
+                    pts = g.geometry.get("points", [])
+                    center = polygon_center(pts)
+                    if center is not None:
+                        dx = snapped.x() - center.x()
+                        dy = snapped.y() - center.y()
+                        g.geometry["points"] = [
+                            [round(float(x) + dx, 2), round(float(y) + dy, 2)]
+                            for x, y in pts
+                        ]
+                        self.redraw()
                 elif role == "circle_center" and g.type.upper() == "CIRCLE":
                     g.geometry["cx"] = round(snapped.x(), 2)
                     g.geometry["cy"] = round(snapped.y(), 2)
@@ -707,71 +686,6 @@ class EditorCanvas(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
-
-    def _commit_rect_outline(self, p1: QPointF, p2: QPointF) -> None:
-        part = self.editor.current_part
-        if part is None:
-            return
-        x1, x2 = sorted([round(p1.x(), 2), round(p2.x(), 2)])
-        y1, y2 = sorted([round(p1.y(), 2), round(p2.y(), 2)])
-        if x2 - x1 < 10.0:
-            x2 = x1 + 40.0
-        if y2 - y1 < 10.0:
-            y2 = y1 + 30.0
-        part.graphics = [
-            OutlineGraphic(
-                type="POLYGON",
-                geometry={
-                    "points": [
-                        [x1, y1],
-                        [x2, y1],
-                        [x2, y2],
-                        [x1, y2],
-                    ]
-                },
-                display_order=0,
-            )
-        ]
-        self.editor.on_part_geometry_modified()
-
-    def _commit_circle_outline(self, center: QPointF, edge: QPointF) -> None:
-        part = self.editor.current_part
-        if part is None:
-            return
-        r = max(
-            round(math.hypot(edge.x() - center.x(), edge.y() - center.y()), 2),
-            15.0,
-        )
-        part.graphics = [
-            OutlineGraphic(
-                type="CIRCLE",
-                geometry={
-                    "cx": round(center.x(), 2),
-                    "cy": round(center.y(), 2),
-                    "radius": r,
-                },
-                display_order=0,
-            )
-        ]
-        self.editor.on_part_geometry_modified()
-
-    def _commit_polygon_draft(self) -> None:
-        part = self.editor.current_part
-        if part is None or len(self._polygon_draft_points) < 3:
-            return
-        pts = [
-            [round(pt.x(), 2), round(pt.y(), 2)]
-            for pt in self._polygon_draft_points
-        ]
-        part.graphics = [
-            OutlineGraphic(
-                type="POLYGON",
-                geometry={"points": pts},
-                display_order=0,
-            )
-        ]
-        self._polygon_draft_points.clear()
-        self.editor.on_part_geometry_modified()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # noqa: N802
         super().drawBackground(painter, rect)
@@ -844,8 +758,10 @@ class EditorCanvas(QGraphicsView):
                     self._scene.addPolygon(
                         poly, outline_pen, QBrush(Qt.BrushStyle.NoBrush)
                     )
-                    for pt in pts:
-                        hx, hy = float(pt[0]), float(pt[1])
+                    handle_points = [(float(pt[0]), float(pt[1])) for pt in pts]
+                    center = polygon_center(pts)
+                    handle_points.append((center.x(), center.y()))
+                    for hx, hy in handle_points:
                         self._scene.addRect(
                             QRectF(
                                 hx - handle_size / 2.0,
@@ -932,36 +848,6 @@ class EditorCanvas(QGraphicsView):
             lbl.setBrush(QBrush(QColor("#1d4ed8")))
             lbl.setPos(cur.x() + half + 2.0, cur.y() - half)
 
-        elif self.mode == MODE_DRAW_RECT and self._draw_start_point is not None:
-            p1 = self._draw_start_point
-            x1, x2 = sorted([p1.x(), cur.x()])
-            y1, y2 = sorted([p1.y(), cur.y()])
-            self._scene.addRect(
-                QRectF(x1, y1, x2 - x1, y2 - y1),
-                preview_pen,
-                QBrush(Qt.BrushStyle.NoBrush),
-            )
-
-        elif (
-            self.mode == MODE_DRAW_CIRCLE
-            and self._draw_start_point is not None
-        ):
-            c = self._draw_start_point
-            r = math.hypot(cur.x() - c.x(), cur.y() - c.y())
-            self._scene.addEllipse(
-                QRectF(c.x() - r, c.y() - r, 2.0 * r, 2.0 * r),
-                preview_pen,
-                QBrush(Qt.BrushStyle.NoBrush),
-            )
-
-        elif self.mode == MODE_DRAW_POLYGON and self._polygon_draft_points:
-            pts = list(self._polygon_draft_points) + [cur]
-            path = QPainterPath(pts[0])
-            for pt in pts[1:]:
-                path.lineTo(pt)
-            path.lineTo(pts[0])
-            self._scene.addPath(path, preview_pen)
-
 
 class ConnectorEditorWidget(QMainWindow):
     """전체 화면 전환 방식으로 동작하는 연결기 부품 편집기 화면."""
@@ -1028,38 +914,18 @@ class ConnectorEditorWidget(QMainWindow):
         self.tool_group.addAction(self.act_add_pin)
         toolbar.addAction(self.act_add_pin)
 
-        self.act_draw_rect = QAction("사각 외곽 그리기", self)
-        self.act_draw_rect.setCheckable(True)
-        self.act_draw_rect.triggered.connect(
-            lambda: self.activate_tool_mode(MODE_DRAW_RECT)
-        )
-        self.tool_group.addAction(self.act_draw_rect)
-        toolbar.addAction(self.act_draw_rect)
-
-        self.act_draw_poly = QAction("다각형 외곽 그리기", self)
-        self.act_draw_poly.setCheckable(True)
-        self.act_draw_poly.triggered.connect(
-            lambda: self.activate_tool_mode(MODE_DRAW_POLYGON)
-        )
-        self.tool_group.addAction(self.act_draw_poly)
-        toolbar.addAction(self.act_draw_poly)
-
-        self.act_draw_circle = QAction("원형 외곽 그리기", self)
-        self.act_draw_circle.setCheckable(True)
-        self.act_draw_circle.triggered.connect(
-            lambda: self.activate_tool_mode(MODE_DRAW_CIRCLE)
-        )
-        self.tool_group.addAction(self.act_draw_circle)
-        toolbar.addAction(self.act_draw_circle)
-
         toolbar.addSeparator()
         auto_place_btn = QPushButton("자동 배치 (바둑판/원형)...")
         auto_place_btn.clicked.connect(self.open_auto_placement_dialog)
         toolbar.addWidget(auto_place_btn)
 
-        dsub_outline_btn = QPushButton("D-SUB 사다리꼴 외곽 생성")
-        dsub_outline_btn.clicked.connect(self.apply_trapezoid_outline)
-        toolbar.addWidget(dsub_outline_btn)
+        # 외곽은 누르면 바로 생성하고 핸들로 다듬는다 (제4.4절).
+        poly_outline_btn = QPushButton("다각형 외곽")
+        poly_outline_btn.clicked.connect(self.create_polygon_outline)
+        toolbar.addWidget(poly_outline_btn)
+        circle_outline_btn = QPushButton("원형 외곽")
+        circle_outline_btn.clicked.connect(self.create_circle_outline)
+        toolbar.addWidget(circle_outline_btn)
 
         toolbar.addSeparator()
         # 그리드 표시와 스냅은 처음부터 켜진 상태로 제공 (제4.5절)
@@ -1083,6 +949,10 @@ class ConnectorEditorWidget(QMainWindow):
             lambda: self.canvas.viewport().update()
         )
         toolbar.addWidget(self.grid_spacing_spin)
+        snap_all_btn = QPushButton("스냅에 맞추기")
+        snap_all_btn.setToolTip("모든 핀과 외곽을 가장 가까운 격자점으로 옮깁니다")
+        snap_all_btn.clicked.connect(self.snap_all_to_grid)
+        toolbar.addWidget(snap_all_btn)
 
         toolbar.addSeparator()
         fit_btn = QPushButton("전체 보기")
@@ -1098,7 +968,7 @@ class ConnectorEditorWidget(QMainWindow):
 
         top_info = QHBoxLayout()
         self.mode_hint_label = QLabel(
-            "도구 모드: 선택 / 이동 — 핀이나 외곽 핸들을 드래그해 이동합니다 (스냅 켜짐 시 그리드에 맞춰 정렬)"
+            SELECT_MODE_HINT
         )
         self.mode_hint_label.setStyleSheet("color: #334155; font-size: 11px;")
         self.coord_status_label = QLabel("커서 좌표: (0.0, 0.0)")
@@ -1185,10 +1055,6 @@ class ConnectorEditorWidget(QMainWindow):
         self.family_edit = QLineEdit()
         self.variant_edit = QLineEdit()
         self.desc_edit = QLineEdit()
-        self.width_spin = QDoubleSpinBox()
-        self.width_spin.setRange(40.0, 2000.0)
-        self.height_spin = QDoubleSpinBox()
-        self.height_spin.setRange(40.0, 2000.0)
 
         self.pin_shape_combo = QComboBox()
         self.pin_shape_combo.addItem("자동 (1번 사각 / 나머지 원형)", "AUTO")
@@ -1198,21 +1064,17 @@ class ConnectorEditorWidget(QMainWindow):
         self.pin_size_spin = QDoubleSpinBox()
         self.pin_size_spin.setRange(6.0, 50.0)
         self.pin_size_spin.setSingleStep(1.0)
-        self.pin_size_spin.setValue(15.0)
+        self.pin_size_spin.setValue(PIN_SIZE)
 
         self.family_edit.editingFinished.connect(self._apply_meta_edits)
         self.variant_edit.editingFinished.connect(self._apply_meta_edits)
         self.desc_edit.editingFinished.connect(self._apply_meta_edits)
-        self.width_spin.valueChanged.connect(self._apply_size_edits)
-        self.height_spin.valueChanged.connect(self._apply_size_edits)
-        self.pin_shape_combo.currentIndexChanged.connect(self._apply_size_edits)
-        self.pin_size_spin.valueChanged.connect(self._apply_size_edits)
+        self.pin_shape_combo.currentIndexChanged.connect(self._apply_pin_style_edits)
+        self.pin_size_spin.valueChanged.connect(self._apply_pin_style_edits)
 
         info_form.addRow("분류 (Family):", self.family_edit)
         info_form.addRow("세부명 (Variant):", self.variant_edit)
         info_form.addRow("설명:", self.desc_edit)
-        info_form.addRow("가로 크기 (Width):", self.width_spin)
-        info_form.addRow("세로 크기 (Height):", self.height_spin)
         info_form.addRow("핀 모양:", self.pin_shape_combo)
         info_form.addRow("핀 크기:", self.pin_size_spin)
         prop_layout.addWidget(info_group)
@@ -1254,28 +1116,11 @@ class ConnectorEditorWidget(QMainWindow):
         self.canvas.set_mode(mode)
         if mode == MODE_SELECT:
             self.act_select.setChecked(True)
-            self.mode_hint_label.setText(
-                "도구 모드: 선택 / 이동 — 핀이나 외곽 핸들을 드래그해 이동합니다 (다각형 변 더블클릭: 꼭짓점 추가)"
-            )
+            self.mode_hint_label.setText(SELECT_MODE_HINT)
         elif mode == MODE_ADD_PIN:
             self.act_add_pin.setChecked(True)
             self.mode_hint_label.setText(
                 "도구 모드: 단일 핀 찍기 — 캔버스를 좌클릭하여 핀을 연속 배치합니다 (ESC 또는 우클릭: 종료)"
-            )
-        elif mode == MODE_DRAW_RECT:
-            self.act_draw_rect.setChecked(True)
-            self.mode_hint_label.setText(
-                "도구 모드: 사각 외곽 그리기 — 시작 모서리와 끝 모서리를 차례로 클릭하세요 (ESC: 취소)"
-            )
-        elif mode == MODE_DRAW_POLYGON:
-            self.act_draw_poly.setChecked(True)
-            self.mode_hint_label.setText(
-                "도구 모드: 다각형 외곽 그리기 — 꼭짓점을 차례로 좌클릭하고 더블클릭/우클릭/Enter로 완성하세요"
-            )
-        elif mode == MODE_DRAW_CIRCLE:
-            self.act_draw_circle.setChecked(True)
-            self.mode_hint_label.setText(
-                "도구 모드: 원형 외곽 그리기 — 원의 중심과 반지름 위치를 차례로 클릭하세요 (ESC: 취소)"
             )
 
     def refresh_part_list(self, select_uuid: str | None = None) -> None:
@@ -1350,8 +1195,6 @@ class ConnectorEditorWidget(QMainWindow):
             self.family_edit.setText(self.current_part.family)
             self.variant_edit.setText(self.current_part.variant)
             self.desc_edit.setText(self.current_part.description)
-            self.width_spin.setValue(self.current_part.width)
-            self.height_spin.setValue(self.current_part.height)
             shape_idx = self.pin_shape_combo.findData(
                 self.current_part.pin_shape
             )
@@ -1487,11 +1330,9 @@ class ConnectorEditorWidget(QMainWindow):
                 f"{self.current_part.name} ({self.current_part.pin_count}핀)"
             )
 
-    def _apply_size_edits(self) -> None:
+    def _apply_pin_style_edits(self) -> None:
         if self._syncing_ui or self.current_part is None:
             return
-        self.current_part.width = round(self.width_spin.value(), 2)
-        self.current_part.height = round(self.height_spin.value(), 2)
         self.current_part.pin_shape = str(
             self.pin_shape_combo.currentData() or "AUTO"
         )
@@ -1503,6 +1344,11 @@ class ConnectorEditorWidget(QMainWindow):
             return
         for idx, pin in enumerate(self.current_part.pins, 1):
             pin.display_order = idx
+        # 부품 영역을 외곽·핀에 맞춘다. 좌표가 옮겨지면 화면도 같이 옮겨 제자리에 보이게 한다 (제4.4절).
+        view_center = self.canvas.mapToScene(self.canvas.viewport().rect().center())
+        dx, dy = fit_part_area(self.current_part)
+        if dx or dy:
+            rebuild_table = True
         if rebuild_table:
             self._populate_pin_table()
         self.save_current_part_to_library()
@@ -1512,6 +1358,8 @@ class ConnectorEditorWidget(QMainWindow):
                 f"{self.current_part.name} ({self.current_part.pin_count}핀)"
             )
         self.canvas.redraw()
+        if dx or dy:
+            self.canvas.centerOn(view_center + QPointF(dx, dy))
 
     def save_current_part_to_library(self) -> None:
         if self.current_part is None:
@@ -1607,27 +1455,49 @@ class ConnectorEditorWidget(QMainWindow):
                     self.current_part.pins.append(np)
             self.on_part_geometry_modified(rebuild_table=True)
 
-    def apply_trapezoid_outline(self) -> None:
-        """D-SUB 형태의 사다리꼴 외곽을 부품 크기에 맞춰 생성한다."""
+    def _set_outline(self, outline: OutlineGraphic) -> None:
         if self.current_part is None:
             return
-        w = self.current_part.width
-        h = self.current_part.height
-        self.current_part.graphics = [
-            OutlineGraphic(
-                type="POLYGON",
-                geometry={
-                    "points": [
-                        [12.0, 12.0],
-                        [round(w - 12.0, 2), 12.0],
-                        [round(w - 26.0, 2), round(h - 12.0, 2)],
-                        [26.0, round(h - 12.0, 2)],
-                    ]
-                },
-                display_order=0,
-            )
-        ]
+        self.current_part.graphics = [outline]
+        self.activate_tool_mode(MODE_SELECT)
         self.on_part_geometry_modified(rebuild_table=False)
+
+    def create_polygon_outline(self) -> None:
+        """기존 외곽을 핀 배열에 맞춘 사각형 다각형으로 바꾼다 (제4.4절)."""
+        if self.current_part is not None:
+            self._set_outline(fitted_polygon_outline(self.current_part))
+
+    def create_circle_outline(self) -> None:
+        """기존 외곽을 핀 배열에 맞춘 원으로 바꾼다 (제4.4절)."""
+        if self.current_part is not None:
+            self._set_outline(fitted_circle_outline(self.current_part))
+
+    def snap_all_to_grid(self, confirm: bool = True) -> bool:
+        """모든 핀과 외곽을 가장 가까운 격자점으로 옮긴다 (제4.5절)."""
+        if self.current_part is None:
+            return False
+        try:
+            snapped, moved_pins, moved_outline = snap_part_to_grid(
+                self.current_part, self.grid_spacing
+            )
+        except ValueError as exc:
+            QMessageBox.information(self, "스냅에 맞추기", f"{exc}\n핀을 옮기지 않았습니다.")
+            return False
+        if not moved_pins and not moved_outline:
+            QMessageBox.information(self, "스냅에 맞추기", "모든 핀과 외곽이 이미 격자에 맞습니다.")
+            return False
+        if confirm:
+            answer = QMessageBox.question(
+                self,
+                "스냅에 맞추기",
+                f"핀 {moved_pins}개, 외곽 점 {moved_outline}개가 이동합니다. 진행할까요?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+        self.current_part.pins = snapped.pins
+        self.current_part.graphics = snapped.graphics
+        self.on_part_geometry_modified(rebuild_table=True)
+        return True
 
     def create_new_part(self) -> None:
         new_part = ConnectorPart(
@@ -1637,23 +1507,9 @@ class ConnectorEditorWidget(QMainWindow):
                 "사용자 정의", "신규 연결기"
             ),
             description="사용자 정의 연결기 부품",
-            width=220.0,
-            height=120.0,
-            pins=generate_grid_pins([5, 4], 24.0, 30.0, 110.0, 60.0, True),
-            graphics=[
-                OutlineGraphic(
-                    type="POLYGON",
-                    geometry={
-                        "points": [
-                            [14.0, 14.0],
-                            [206.0, 14.0],
-                            [194.0, 106.0],
-                            [26.0, 106.0],
-                        ]
-                    },
-                    display_order=0,
-                )
-            ],
+            width=NEW_PART_WIDTH,
+            height=NEW_PART_HEIGHT,
+            pin_size=PIN_SIZE,
         )
         self.part_library.upsert_part(new_part, save_now=True)
         self.refresh_part_list(select_uuid=new_part.uuid)

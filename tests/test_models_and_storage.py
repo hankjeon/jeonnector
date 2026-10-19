@@ -347,3 +347,72 @@ def test_auto_placement_generators() -> None:
     assert circ_pins[0].designator == "A1"
     assert circ_pins[-1].x == 100.0
     assert circ_pins[-1].y == 100.0
+
+
+def test_row_rename_copies_or_follows_signal_attributes() -> None:
+    """행 신호명 변경: 새 이름은 이전 신호 속성을 복사하고, 기존 이름은 그 신호 속성을 따른다 (제3.6절)."""
+    project = Project(name="이름변경")
+    part = create_default_parts()[0]
+    conn = project.add_connector("J1", part)
+    assert conn.add_signal_row("GDN", "1", part, "접지", "#111111")
+    assert conn.add_signal_row("GDN", "2", part)
+    assert conn.add_signal_row("VCC", "3", part, "전원", "")
+
+    gdn_row = next(i for i, r in enumerate(conn.rows) if r.pin_designator == "1")
+    assert conn.add_or_update_row_signal(gdn_row, "GND")
+    gnd = conn.get_signal("GND")
+    assert (gnd.signal_type, gnd.color) == ("접지", "#111111")
+    old = conn.get_signal("GDN")
+    assert (old.signal_type, old.color) == ("접지", "#111111")  # 복사이며 이전 신호는 유지
+
+    vcc_row = next(i for i, r in enumerate(conn.rows) if r.signal_name == "VCC")
+    assert conn.add_or_update_row_signal(vcc_row, "GND")
+    assert conn.get_signal("GND").signal_type == "접지"
+    assert conn.get_signal("VCC") is None
+
+
+def test_part_geometry_outline_area_and_grid_snap() -> None:
+    """핀에 맞춘 외곽 생성, 중심 대칭 영역 맞춤, 스냅에 맞추기 계산 (제4.4~4.5절)."""
+    from jeonnector.part_geometry import (
+        fit_part_area,
+        fitted_circle_outline,
+        fitted_polygon_outline,
+        snap_coord,
+        snap_part_to_grid,
+    )
+
+    for default in create_default_parts():
+        part = default.clone()
+        assert fit_part_area(part) == (0.0, 0.0)
+        assert (part.width, part.height) == pytest.approx((default.width, default.height))
+
+    pins = [PinDefinition(designator=str(i), x=x, y=100.0) for i, x in enumerate((100.0, 140.0), 1)]
+    part = ConnectorPart(uuid="u", family="F", variant="V", width=400.0, height=300.0, pins=pins)
+    assert fitted_polygon_outline(part).geometry["points"] == [
+        [70.0, 78.0], [170.0, 78.0], [170.0, 132.0], [70.0, 132.0]
+    ]
+    circle = fitted_circle_outline(part).geometry
+    assert circle == {"cx": 120.0, "cy": 100.0, "radius": 50.0}
+
+    # 중심(200, 150) 기준 대칭으로 줄이며, 중심에 대한 핀의 상대 위치는 유지된다.
+    before = [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins]
+    part.graphics = [fitted_polygon_outline(part)]
+    fit_part_area(part)
+    assert (part.width, part.height) == pytest.approx((284.0, 168.0))
+    after = [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins]
+    assert after == pytest.approx(before)
+
+    part.pins[1].x += 3.0
+    part.graphics[0].geometry["points"][0][0] += 4.0
+    snapped, moved_pins, moved_outline = snap_part_to_grid(part, 10.0)
+    assert moved_pins == 1 and moved_outline >= 1
+    cx, cy = part.width / 2, part.height / 2
+    assert all(snap_coord(p.x, cx, 10.0) == p.x for p in snapped.pins)
+    assert all(
+        (snap_coord(x, cx, 10.0), snap_coord(y, cy, 10.0)) == (x, y)
+        for x, y in snapped.graphics[0].geometry["points"]
+    )
+
+    part.pins[1].x = part.pins[0].x + 4.0
+    with pytest.raises(ValueError):
+        snap_part_to_grid(part, 10.0)

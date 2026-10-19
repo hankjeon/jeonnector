@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QPushButton
 from jeonnector.model import Project
 from jeonnector.storage import PartLibrary, load_project, save_project
 from jeonnector.ui.main_window import MainWindow
-from jeonnector.ui.signal_table import COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE
+from jeonnector.ui.signal_table import COL_COLOR, COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE
 
 
 @pytest.fixture
@@ -174,11 +174,20 @@ def test_keyboard_tab_enter_and_existing_cell_edit(window, qtbot):
     panel.draft_pin_combo.setFocus()
     qtbot.keyClick(panel.draft_pin_combo, Qt.Key.Key_Tab)
     assert panel.draft_name_combo.hasFocus()
+    # 핀 번호 칸에서 신호명 없이 Enter를 누르면 오류 없이 신호명 칸으로 이동한다.
+    panel.draft_pin_combo.setFocus()
+    panel.draft_pin_combo.lineEdit().selectAll()
+    qtbot.keyClicks(panel.draft_pin_combo.lineEdit(), "3")
+    qtbot.keyClick(panel.draft_pin_combo.lineEdit(), Qt.Key.Key_Return)
+    qtbot.waitUntil(panel.draft_name_combo.hasFocus)
+    assert not window.current_connector.signals
+    assert panel.draft_name_combo.styleSheet() == ""
+    # 신호명이 있으면 Enter로 바로 추가하고 핀 번호 칸으로 돌아간다.
     qtbot.keyClicks(panel.draft_name_combo.lineEdit(), "first")
-    qtbot.keyClick(panel.draft_name_combo, Qt.Key.Key_Return)
-    assert not window.current_connector.signals  # Enter로 행을 추가하지 않는다.
-    qtbot.mouseClick(panel.add_button, Qt.MouseButton.LeftButton)
-    assert rows(window) == [("FIRST", "")]
+    qtbot.keyClick(panel.draft_name_combo.lineEdit(), Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: rows(window) == [("FIRST", "3")])
+    qtbot.waitUntil(panel.draft_pin_combo.hasFocus)
+    assert not panel.has_draft()
     add(panel, "SECOND", "2")
     row = next(i for i, r in enumerate(window.current_connector.rows) if r.signal_name == "FIRST")
     panel.table.setCurrentCell(row, COL_PIN)
@@ -312,3 +321,49 @@ def test_narrow_pinmap_retains_controls(window, qtbot):
     panel.zoom_in_btn.click()
     panel.flip_checkbox.click()
     assert window.current_connector.flip_horizontal
+
+
+def test_color_column_shows_individual_type_or_none(window):
+    panel = window.signal_table_panel
+    window.project.set_signal_type_color("전원", "#ef4444")
+    add(panel, "PWR", "1", "전원")
+    add(panel, "PLAIN", "2")
+    panel.draft_name_combo.setEditText("CUSTOM")
+    panel.draft_pin_combo.setEditText("3")
+    panel.draft.color = "#123456"
+    assert panel.commit_draft()
+    labels = {
+        panel.table.item(r, COL_SIGNAL).text(): (
+            panel.table.item(r, COL_COLOR).text(), panel.table.item(r, COL_COLOR).toolTip()
+        )
+        for r in range(len(window.current_connector.rows))
+    }
+    assert labels["PWR"] == ("유형", "유형 색상 #ef4444")
+    assert labels["PLAIN"] == ("없음", "색상 없음")
+    assert labels["CUSTOM"] == ("개별", "개별 색상 #123456")
+    panel.draft_type_combo.setEditText("전원")
+    assert panel.draft_color_button.text() == "유형"
+    panel.draft.color = "#00ff00"
+    panel._update_draft_color_button()
+    assert panel.draft_color_button.text() == "개별"
+
+
+def test_sidebar_shows_identifier_and_context_menu(window):
+    assert window.sidebar_dock.windowTitle() == "연결기 목록"
+    assert not window.sidebar_dock.findChildren(QPushButton)
+    item = window.connector_list.item(0)
+    assert item.text() == "J1"
+    assert item.toolTip() == ""
+    empty_menu = [a.text() for a in window.build_connector_context_menu(None).actions()]
+    assert empty_menu == ["연결기 추가..."]
+    item_menu = [
+        a.text() for a in window.build_connector_context_menu(item).actions() if a.text()
+    ]
+    assert item_menu == ["연결기 추가...", "식별자 변경...", "제거"]
+
+    panel = window.signal_table_panel
+    add(panel, "A", "3")
+    add(panel, "B", "3")
+    item = window.connector_list.item(0)
+    assert item.text() == "⚠ J1"
+    assert item.toolTip() == "신호 중복 1건"

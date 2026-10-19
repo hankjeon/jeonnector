@@ -440,7 +440,7 @@ class ConnectorInstance:
         - 신호명 규칙(영문자 시작, 영문 대문자·숫자·언더스코어, 32자 이하)을 검증하고 대문자로 정규화한다.
         - 한 행의 신호명을 바꾸면 그 행만 다른 신호가 된다 (다른 행은 기존 신호로 유지).
         - 바꾼 이름의 신호가 이미 있으면 그 행은 해당 신호의 속성을 따른다.
-        - 처음 쓰는 이름이면 신호유형과 색상이 '없음'("")인 새 신호가 생성된다.
+        - 기존 행을 처음 쓰는 이름으로 바꾸면 이전 신호의 신호유형·색상을 복사한 새 신호가 생성된다.
         - 행이 하나도 남지 않은 이전 신호는 사라진다.
         """
         if not is_valid_signal_name(signal_name):
@@ -472,10 +472,11 @@ class ConnectorInstance:
             return True
 
         if cleaned not in self.signals:
+            old_sig = self.signals.get(old_name)
             self.signals[cleaned] = SignalDefinition(
                 name=cleaned,
-                signal_type=norm_type,
-                color="",
+                signal_type=old_sig.signal_type if old_sig else norm_type,
+                color=old_sig.color if old_sig else "",
             )
         target_row.signal_name = cleaned
         pending_id = (

@@ -393,7 +393,7 @@ class PinmapCanvas(QGraphicsView):
         self._scene.clear()
         if self._connector is None:
             text_item = self._scene.addText(
-                "왼쪽 사이드바에서 연결기를 선택하거나 추가해 주세요.",
+                "왼쪽 연결기 목록에서 연결기를 선택하거나 우클릭하여 추가해 주세요.",
                 QFont("Malgun Gothic", 11),
             )
             text_item.setDefaultTextColor(QColor("#64748b"))

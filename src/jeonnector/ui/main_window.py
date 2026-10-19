@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QByteArray, QSettings, Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QFormLayout,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -33,7 +32,6 @@ from PySide6.QtWidgets import (
 
 from jeonnector.commands import CommandDispatcher
 from jeonnector.model import (
-    EMPTY_PART_MESSAGE,
     ConnectorInstance,
     ConnectorPart,
     Project,
@@ -48,6 +46,22 @@ from jeonnector.ui.signal_table import SignalTablePanel
 from jeonnector.ui.signal_type_dialog import SignalTypeDialog
 
 MAX_RECENT_FILES = 8
+EMPTY_CONNECTOR_LIST_HINT = "우클릭하여 연결기 추가"
+
+
+class ConnectorListWidget(QListWidget):
+    """연결기 목록. 비어 있으면 우클릭 추가 안내 문구를 표시한다 (제3.1절)."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self.count() == 0:
+            painter = QPainter(self.viewport())
+            painter.setPen(QColor("#94a3b8"))
+            painter.drawText(
+                self.viewport().rect(),
+                Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                EMPTY_CONNECTOR_LIST_HINT,
+            )
 
 
 class AddConnectorDialog(QDialog):
@@ -255,7 +269,7 @@ class MainWindow(QMainWindow):
         self.project_workspace.setCentralWidget(self.pinmap_panel)
 
         # 왼쪽 도킹 창: 사이드바
-        self.sidebar_dock = QDockWidget("사이드바 (연결기 목록)", self.project_workspace)
+        self.sidebar_dock = QDockWidget("연결기 목록", self.project_workspace)
         self.sidebar_dock.setObjectName("SidebarDock")
         self.sidebar_dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
@@ -267,21 +281,16 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(6, 6, 6, 6)
         sidebar_layout.setSpacing(6)
 
-        btn_row = QHBoxLayout()
-        self.add_conn_btn = QPushButton("+ 추가")
-        self.rename_conn_btn = QPushButton("식별자 변경")
-        self.remove_conn_btn = QPushButton("- 제거")
-        self.add_conn_btn.clicked.connect(self.open_add_connector_dialog)
-        self.rename_conn_btn.clicked.connect(self.rename_selected_connector)
-        self.remove_conn_btn.clicked.connect(self.remove_selected_connector)
-        btn_row.addWidget(self.add_conn_btn)
-        btn_row.addWidget(self.rename_conn_btn)
-        btn_row.addWidget(self.remove_conn_btn)
-        sidebar_layout.addLayout(btn_row)
-
-        self.connector_list = QListWidget()
+        # 추가·식별자 변경·제거는 우클릭 메뉴로 처리한다 (제3.1절).
+        self.connector_list = ConnectorListWidget()
         self.connector_list.currentItemChanged.connect(
             self._on_connector_selected
+        )
+        self.connector_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.connector_list.customContextMenuRequested.connect(
+            self._show_connector_context_menu
         )
         sidebar_layout.addWidget(self.connector_list, 1)
 
@@ -594,17 +603,13 @@ class MainWindow(QMainWindow):
             selected_row = -1
             sorted_conns = self.project.sorted_connectors()
             for idx, conn in enumerate(sorted_conns):
-                part = self.project.get_part_for_connector(conn)
-                part_label = part.name if part else EMPTY_PART_MESSAGE
                 dup_cnt = conn.duplicate_pin_count()
                 prefix = "⚠ " if dup_cnt > 0 else ""
-                warn_tag = f"  [신호 중복 {dup_cnt}건]" if dup_cnt > 0 else ""
-                item = QListWidgetItem(
-                    f"{prefix}{conn.designator} — {part_label}{warn_tag}"
-                )
+                item = QListWidgetItem(f"{prefix}{conn.designator}")
                 item.setData(Qt.ItemDataRole.UserRole, conn.designator)
                 if dup_cnt > 0:
                     item.setForeground(Qt.GlobalColor.red)
+                    item.setToolTip(f"신호 중복 {dup_cnt}건")
                 self.connector_list.addItem(item)
                 if current_des and conn.designator == normalize_signal_name(
                     current_des
@@ -620,6 +625,31 @@ class MainWindow(QMainWindow):
 
         self._refresh_current_connector_views(reset_canvas_view=False)
         self.update_status_bar()
+
+    def build_connector_context_menu(
+        self, item: QListWidgetItem | None
+    ) -> QMenu:
+        """빈 공간은 추가, 연결기는 추가·식별자 변경·제거 메뉴를 만든다 (제3.1절)."""
+        menu = QMenu(self.connector_list)
+        menu.addAction("연결기 추가...", self.open_add_connector_dialog)
+        if item is not None:
+            menu.addSeparator()
+            menu.addAction("식별자 변경...", self.rename_selected_connector)
+            menu.addAction("제거", self.remove_selected_connector)
+        return menu
+
+    def _show_connector_context_menu(self, pos) -> None:
+        item = self.connector_list.itemAt(pos)
+        if item is not None and item is not self.connector_list.currentItem():
+            target = item.data(Qt.ItemDataRole.UserRole)
+            self.connector_list.setCurrentItem(item)
+            # 미완료 입력 처리에서 취소하면 선택이 바뀌지 않으므로 메뉴를 열지 않는다.
+            # 처리 과정에서 목록을 다시 만들 수 있어 현재 항목을 다시 읽는다.
+            item = self.connector_list.currentItem()
+            if item is None or item.data(Qt.ItemDataRole.UserRole) != target:
+                return
+        menu = self.build_connector_context_menu(item)
+        menu.exec(self.connector_list.viewport().mapToGlobal(pos))
 
     def _on_connector_selected(
         self,

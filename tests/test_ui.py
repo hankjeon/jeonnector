@@ -17,6 +17,7 @@ from jeonnector.model import (
 from jeonnector.storage import PartLibrary
 from jeonnector.ui.connector_editor import (
     DEFAULT_GRID_SPACING,
+    AutoPlacementDialog,
     MODE_ADD_PIN,
     MODE_SELECT,
     snap_coord,
@@ -286,3 +287,46 @@ def test_default_grid_aligns_with_default_row_pin_columns() -> None:
             continue
         for pin in part.pins:
             assert snap_coord(pin.x, part.width / 2.0, DEFAULT_GRID_SPACING) == pytest.approx(pin.x)
+
+
+def test_editor_new_part_outline_tools_and_snap(qapp: QApplication, tmp_path: Path) -> None:
+    """새 부품 빈 시작, 자동 배치 기본값, 외곽 즉시 생성, 영역 자동 맞춤, 스냅에 맞추기 (제4.4~4.5절)."""
+    lib = PartLibrary(storage_path=tmp_path / "editor_lib.json")
+    win = MainWindow(part_library=lib)
+    editor = win.editor_widget
+    editor.create_new_part()
+    part = editor.current_part
+    assert part is not None and not part.pins and not part.graphics
+    assert (part.width, part.height, part.pin_size) == (400.0, 300.0, 16.0)
+    assert not hasattr(editor, "width_spin")
+
+    dialog = AutoPlacementDialog(part, snap_enabled=True, grid_spacing=editor.grid_spacing)
+    assert (dialog.pitch_x_spin.value(), dialog.pitch_y_spin.value()) == (40.0, 48.0)
+    dialog.row_counts_edit.setText("3, 2")
+    part.pins, _ = dialog.build_pins()
+    editor.on_part_geometry_modified()
+    center_offsets = [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins]
+
+    editor.create_polygon_outline()
+    points = part.graphics[0].geometry["points"]
+    assert len(points) == 4
+    assert min(x for x, _ in points) == pytest.approx(min(p.x for p in part.pins) - 30.0)
+    assert part.width == pytest.approx(max(x for x, _ in points) - min(x for x, _ in points) + 24.0)
+    assert [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins] == pytest.approx(center_offsets)
+
+    editor.create_circle_outline()
+    assert part.graphics[0].type == "CIRCLE"
+    assert part.width == pytest.approx(2 * (part.graphics[0].geometry["radius"] + 12.0))
+
+    part.pins[0].x += 3.0
+    assert editor.snap_all_to_grid(confirm=False)
+    cx, cy = part.width / 2, part.height / 2
+    assert all(
+        snap_coord(p.x, cx, editor.grid_spacing) == pytest.approx(p.x)
+        and snap_coord(p.y, cy, editor.grid_spacing) == pytest.approx(p.y)
+        for p in part.pins
+    )
+    stored = lib.get_part(part.uuid)
+    assert stored is not None and stored.pins[0].x == pytest.approx(part.pins[0].x)
+    win.mark_dirty(False)
+    win.close()

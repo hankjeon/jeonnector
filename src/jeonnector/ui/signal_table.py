@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QColorDialog,
     QComboBox,
     QHeaderView,
@@ -43,6 +44,24 @@ COL_SIGNAL_TYPE = 2
 COL_CATEGORY = 2  # 하위 호환 별칭
 COL_COLOR = 3
 COL_ACTION = 4
+
+
+def color_cell_label(individual_color: str, type_color: str) -> tuple[str, str]:
+    """색상 칸의 짧은 표시 문구와 색상 코드 툴팁을 반환한다 (제3.6절)."""
+    if individual_color:
+        return "개별", f"개별 색상 {individual_color}"
+    if type_color:
+        return "유형", f"유형 색상 {type_color}"
+    return "없음", "색상 없음"
+
+
+def readable_text_color(background: QColor) -> str:
+    luminance = (
+        0.299 * background.red()
+        + 0.587 * background.green()
+        + 0.114 * background.blue()
+    )
+    return "#ffffff" if luminance < 145 else "#0f172a"
 
 
 @dataclass
@@ -148,13 +167,14 @@ class SignalTablePanel(QWidget):
         self._sort_descending: bool = False
         self.commands = commands
         self.draft = SignalDraft()
+        self._draft_return_pending = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         self.info_label = QLabel(
-            "마지막 행에 입력 후 추가(Ctrl+Enter) · 행 헤더 우클릭으로 삭제 · 열 헤더로 정렬"
+            "마지막 행에 입력 후 Enter로 추가 · 행 헤더 우클릭으로 삭제 · 열 헤더로 정렬"
         )
         self.info_label.setWordWrap(True)
         self.info_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -197,7 +217,7 @@ class SignalTablePanel(QWidget):
         )
         self.table.setColumnWidth(COL_PIN, 95)
         self.table.setColumnWidth(COL_SIGNAL_TYPE, 130)
-        self.table.setColumnWidth(COL_COLOR, 110)
+        self.table.setColumnWidth(COL_COLOR, 64)
         self.table.setColumnWidth(COL_ACTION, 140)
 
         # 행 헤더(제일 좌측 핸들 영역) 선택 및 우클릭 컨텍스트 메뉴 설정 (제3.6절)
@@ -263,8 +283,7 @@ class SignalTablePanel(QWidget):
             ["없음"] + sorted(self.project.signal_types, key=natural_sort_key),
             self.draft.signal_type or "없음",
         )
-        self.draft_color_button = QPushButton(self.draft.color or "없음")
-        self.draft_color_button.setToolTip("개별 색상 선택 · 우클릭으로 없음")
+        self.draft_color_button = QPushButton()
         self.draft_color_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.draft_color_button.clicked.connect(self._pick_draft_color)
         self.draft_color_button.customContextMenuRequested.connect(self._draft_color_menu)
@@ -287,15 +306,45 @@ class SignalTablePanel(QWidget):
             lambda text: setattr(self.draft, "pin", "" if text == "미할당" else text)
         )
         self.draft_name_combo.currentTextChanged.connect(self._draft_name_changed)
-        self.draft_type_combo.currentTextChanged.connect(
-            lambda text: setattr(self.draft, "signal_type", "" if text == "없음" else text)
-        )
+        self.draft_type_combo.currentTextChanged.connect(self._draft_type_changed)
+        for source, combo in (
+            ("pin", self.draft_pin_combo),
+            ("name", self.draft_name_combo),
+            ("type", self.draft_type_combo),
+        ):
+            combo.lineEdit().returnPressed.connect(
+                lambda source=source: self._on_draft_return(source)
+            )
         self._update_draft_attributes()
         QWidget.setTabOrder(self.draft_pin_combo, self.draft_name_combo)
         QWidget.setTabOrder(self.draft_name_combo, self.draft_type_combo)
         QWidget.setTabOrder(self.draft_type_combo, self.draft_color_button)
         QWidget.setTabOrder(self.draft_color_button, self.add_button)
         QWidget.setTabOrder(self.add_button, self.reset_button)
+
+    def _on_draft_return(self, source: str) -> None:
+        # Ctrl+Enter는 단축키가 처리한다. 콤보 상자가 Enter를 줄 편집기에 다시 전달해
+        # 한 번 누를 때 두 번 올 수 있으므로 한 번만 처리하고, 입력 위젯을 다시 만들기 전에 신호 처리를 끝낸다.
+        if self._draft_return_pending or (
+            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            return
+        self._draft_return_pending = True
+        QTimer.singleShot(0, lambda: self._handle_draft_return(source))
+
+    def _handle_draft_return(self, source: str) -> None:
+        """입력 행의 Enter: 신호명이 없으면 핀 번호에서 신호명으로 이동하고, 있으면 추가한다 (제3.6.1절)."""
+        self._draft_return_pending = False
+        if self.connector is None:
+            return
+        if source == "pin" and not self.draft.name.strip():
+            self.draft_name_combo.setFocus()
+            return
+        self.commit_draft()
+
+    def _draft_type_changed(self, text: str) -> None:
+        self.draft.signal_type = "" if text == "없음" else text
+        self._update_draft_color_button()
 
     def _draft_name_changed(self, text: str) -> None:
         self.draft.name = text
@@ -311,9 +360,21 @@ class SignalTablePanel(QWidget):
         self.draft_type_combo.blockSignals(False)
         self.draft_type_combo.setEnabled(signal is None)
         self.draft_color_button.setEnabled(signal is None)
-        self.draft_color_button.setText(self.draft.color or "없음")
+        self._update_draft_color_button()
+
+    def _update_draft_color_button(self) -> None:
+        type_color = (
+            self.project.signal_type_color(self.draft.signal_type)
+            if self.project and self.draft.signal_type
+            else ""
+        )
+        text, tooltip = color_cell_label(self.draft.color, type_color)
+        self.draft_color_button.setText(text)
+        self.draft_color_button.setToolTip(f"{tooltip} · 클릭: 개별 색상 선택 · 우클릭: 없음")
+        shown = self.draft.color or type_color
         self.draft_color_button.setStyleSheet(
-            f"background-color: {self.draft.color};" if self.draft.color else ""
+            f"background-color: {shown}; color: {readable_text_color(QColor(shown))};"
+            if shown else ""
         )
 
     def _pick_draft_color(self) -> None:
@@ -374,6 +435,11 @@ class SignalTablePanel(QWidget):
         self.refresh_table(preserve_row_id=row_id)
         self.dataChanged.emit()
         self._emit_current_row_pin_selection(self.table.currentRow())
+        # 다음 신호를 이어서 입력하도록 입력 행의 첫 칸으로 돌아간다.
+        if self.draft_pin_combo.isEnabled():
+            self.draft_pin_combo.setFocus()
+        else:
+            self.draft_name_combo.setFocus()
         return True
 
     def set_context(
@@ -517,26 +583,16 @@ class SignalTablePanel(QWidget):
                 self.table.setItem(r_idx, COL_SIGNAL_TYPE, type_item)
 
                 # 3. 색상 셀
-                if ind_color:
-                    color_text = ind_color
-                elif type_color:
-                    color_text = f"유형색 ({type_color})"
-                else:
-                    color_text = "없음"
+                color_text, color_tip = color_cell_label(ind_color, type_color)
                 color_item = QTableWidgetItem(color_text)
+                color_item.setToolTip(color_tip)
+                color_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 color_item.setFlags(
                     Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
                 )
                 swatch = QColor(eff_color)
                 color_item.setBackground(QBrush(swatch))
-                lum = (
-                    0.299 * swatch.red()
-                    + 0.587 * swatch.green()
-                    + 0.114 * swatch.blue()
-                )
-                color_item.setForeground(
-                    QBrush(QColor("#ffffff" if lum < 145 else "#0f172a"))
-                )
+                color_item.setForeground(QBrush(QColor(readable_text_color(swatch))))
                 self.table.setItem(r_idx, COL_COLOR, color_item)
                 action_item = QTableWidgetItem("")
                 action_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
