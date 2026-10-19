@@ -4,12 +4,18 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QMessageBox, QPushButton
 
 from jeonnector.model import Project
 from jeonnector.storage import PartLibrary, load_project, save_project
 from jeonnector.ui.main_window import MainWindow
-from jeonnector.ui.signal_table import COL_COLOR, COL_PIN, COL_SIGNAL, COL_SIGNAL_TYPE
+from jeonnector.ui.signal_table import (
+    COL_COLOR,
+    COL_PIN,
+    COL_SIGNAL,
+    COL_SIGNAL_TYPE,
+    DEFAULT_COLUMN_WIDTHS,
+)
 
 
 @pytest.fixture
@@ -320,6 +326,36 @@ def test_narrow_pinmap_retains_controls(window, qtbot):
     panel.zoom_in_btn.click()
     panel.flip_checkbox.click()
     assert window.current_connector.flip_horizontal
+
+
+def test_column_widths_adjustable_scroll_and_remembered(window, qtbot, tmp_path):
+    panel = window.signal_table_panel
+    header = panel.table.horizontalHeader()
+    assert all(
+        header.sectionResizeMode(col) == QHeaderView.ResizeMode.Interactive
+        for col in range(panel.table.columnCount())
+    )
+    assert not header.stretchLastSection()
+    assert panel.column_widths() == DEFAULT_COLUMN_WIDTHS
+
+    # 열 너비 합계가 표보다 넓으면 가로 스크롤 바가 생긴다.
+    window.show()
+    qtbot.waitUntil(window.isVisible)
+    panel.table.setColumnWidth(COL_SIGNAL, 3000)
+    qtbot.waitUntil(lambda: panel.table.horizontalScrollBar().maximum() > 0)
+
+    # 종료 시 저장한 열 너비를 다음 실행에서 복원하고, 배치 초기화로 기본값으로 되돌린다.
+    panel.table.setColumnWidth(COL_SIGNAL, 260)
+    widths = panel.column_widths()
+    window._save_window_settings()
+    other = MainWindow(PartLibrary(storage_path=tmp_path / "parts2.json"))
+    qtbot.addWidget(other)
+    assert other.signal_table_panel.column_widths() == widths
+    other.reset_window_layout()
+    assert other.signal_table_panel.column_widths() == DEFAULT_COLUMN_WIDTHS
+
+    panel.set_column_widths([10, 20])  # 열 수가 다른 저장값은 무시한다.
+    assert panel.column_widths() == widths
 
 
 def test_color_column_shows_individual_type_or_none(window):

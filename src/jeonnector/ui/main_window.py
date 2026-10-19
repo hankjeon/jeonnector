@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
             [230, 520],
             Qt.Orientation.Horizontal,
         )
+        self.signal_table_panel.reset_column_widths()
 
     def _restore_window_settings(self) -> None:
         settings = self._settings()
@@ -398,12 +399,21 @@ class MainWindow(QMainWindow):
         dock_state = settings.value("workspace_dock_state")
         if isinstance(dock_state, QByteArray) and not dock_state.isEmpty():
             self.project_workspace.restoreState(dock_state)
+        widths = settings.value("signal_table_column_widths")
+        if isinstance(widths, list):
+            try:
+                self.signal_table_panel.set_column_widths([int(w) for w in widths])
+            except (TypeError, ValueError):
+                pass
 
     def _save_window_settings(self) -> None:
         settings = self._settings()
         settings.setValue("main_geometry", self.saveGeometry())
         settings.setValue(
             "workspace_dock_state", self.project_workspace.saveState()
+        )
+        settings.setValue(
+            "signal_table_column_widths", self.signal_table_panel.column_widths()
         )
 
     def recent_files(self) -> list[str]:

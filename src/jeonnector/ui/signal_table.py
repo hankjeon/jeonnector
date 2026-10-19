@@ -45,6 +45,9 @@ COL_CATEGORY = 2  # 하위 호환 별칭
 COL_COLOR = 3
 COL_ACTION = 4
 
+# 열 기본 너비(열 순서). 모든 열은 사용자가 조정하며, 넘치면 가로 스크롤한다 (제4.2절).
+DEFAULT_COLUMN_WIDTHS = [95, 180, 130, 64, 140]
+
 
 def color_cell_label(individual_color: str, type_color: str) -> tuple[str, str]:
     """색상 칸의 짧은 표시 문구와 색상 코드 툴팁을 반환한다 (제3.6절)."""
@@ -214,22 +217,9 @@ class SignalTablePanel(QWidget):
         h_header.setSortIndicatorShown(True)
         h_header.setSortIndicator(COL_PIN, Qt.SortOrder.AscendingOrder)
         h_header.sectionClicked.connect(self._on_header_clicked)
-        h_header.setSectionResizeMode(
-            COL_PIN, QHeaderView.ResizeMode.Interactive
-        )
-        h_header.setSectionResizeMode(
-            COL_SIGNAL, QHeaderView.ResizeMode.Stretch
-        )
-        h_header.setSectionResizeMode(
-            COL_SIGNAL_TYPE, QHeaderView.ResizeMode.Interactive
-        )
-        h_header.setSectionResizeMode(
-            COL_COLOR, QHeaderView.ResizeMode.Interactive
-        )
-        self.table.setColumnWidth(COL_PIN, 95)
-        self.table.setColumnWidth(COL_SIGNAL_TYPE, 130)
-        self.table.setColumnWidth(COL_COLOR, 64)
-        self.table.setColumnWidth(COL_ACTION, 140)
+        h_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        h_header.setStretchLastSection(False)
+        self.reset_column_widths()
 
         # 행 헤더(제일 좌측 핸들 영역) 선택 및 우클릭 컨텍스트 메뉴 설정 (제3.6절)
         v_header = self.table.verticalHeader()
@@ -262,6 +252,19 @@ class SignalTablePanel(QWidget):
         self.add_keypad_shortcut = QShortcut(QKeySequence("Ctrl+Enter"), self)
         self.add_keypad_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.add_keypad_shortcut.activated.connect(self.commit_draft)
+
+    def column_widths(self) -> list[int]:
+        return [self.table.columnWidth(col) for col in range(self.table.columnCount())]
+
+    def set_column_widths(self, widths: list[int]) -> None:
+        """저장된 열 너비를 적용한다. 열 수가 다르거나 잘못된 값이면 무시한다."""
+        if len(widths) != self.table.columnCount() or any(w <= 0 for w in widths):
+            return
+        for col, width in enumerate(widths):
+            self.table.setColumnWidth(col, width)
+
+    def reset_column_widths(self) -> None:
+        self.set_column_widths(DEFAULT_COLUMN_WIDTHS)
 
     def has_draft(self) -> bool:
         return any((self.draft.pin, self.draft.name, self.draft.signal_type, self.draft.color))
