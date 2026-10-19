@@ -29,6 +29,41 @@ from jeonnector.model import (
 )
 
 
+TYPE_NAME_RULE_MESSAGE = (
+    "신호유형 이름은 영문자 또는 한글로 시작하고 영문 대문자·한글·숫자·언더스코어(_)만 사용할 수 있습니다(공백 불가, 32자 이하)."
+)
+
+
+def prompt_rename_signal_type(parent: QWidget, project: Project, old_name: str) -> str:
+    """새 이름을 입력받아 신호유형 이름을 바꾸고 새 이름을 반환한다. 취소·실패 시 빈 문자열."""
+    raw, ok = QInputDialog.getText(
+        parent, "신호유형 이름 변경", f"'{old_name}'의 새 이름:", text=old_name
+    )
+    if not ok or not raw.strip():
+        return ""
+    if not is_valid_signal_type_name(raw):
+        QMessageBox.warning(parent, "이름 규칙 오류", TYPE_NAME_RULE_MESSAGE)
+        return ""
+    norm = normalize_signal_type_name(raw)
+    if not project.rename_signal_type(old_name, norm):
+        QMessageBox.warning(
+            parent, "이름 변경 불가", f"'{norm}' 신호유형이 이미 존재하거나 변경할 수 없습니다."
+        )
+        return ""
+    return norm
+
+
+def pick_signal_type_color(parent: QWidget, project: Project, type_name: str) -> bool:
+    """색상 선택 창으로 신호유형 색상을 바꾼다. 바꾸었으면 True."""
+    cur = project.signal_type_color(type_name)
+    initial = QColor(cur) if cur else QColor("#3b82f6")
+    chosen = QColorDialog.getColor(initial, parent, f"'{type_name}' 신호유형 색상 선택")
+    if not chosen.isValid():
+        return False
+    project.set_signal_type_color(type_name, chosen.name())
+    return True
+
+
 class SignalTypeDialog(QDialog):
     """프로젝트의 신호유형 목록을 표로 관리하는 대화상자 (제3.10절)."""
 
@@ -134,11 +169,7 @@ class SignalTypeDialog(QDialog):
         if not ok or not raw.strip():
             return
         if not is_valid_signal_type_name(raw):
-            QMessageBox.warning(
-                self,
-                "이름 규칙 오류",
-                "신호유형 이름은 영문자 또는 한글로 시작하고 영문 대문자·한글·숫자·언더스코어(_)만 사용할 수 있습니다(공백 불가, 32자 이하).",
-            )
+            QMessageBox.warning(self, "이름 규칙 오류", TYPE_NAME_RULE_MESSAGE)
             return
         norm = normalize_signal_type_name(raw)
         if norm in self.project.signal_types:
@@ -154,43 +185,14 @@ class SignalTypeDialog(QDialog):
         old_name = self.selected_type_name()
         if not old_name:
             return
-        raw, ok = QInputDialog.getText(
-            self,
-            "신호유형 이름 변경",
-            f"'{old_name}'의 새 이름:",
-            text=old_name,
-        )
-        if not ok or not raw.strip():
-            return
-        if not is_valid_signal_type_name(raw):
-            QMessageBox.warning(
-                self,
-                "이름 규칙 오류",
-                "신호유형 이름은 영문자 또는 한글로 시작하고 영문 대문자·한글·숫자·언더스코어(_)만 사용할 수 있습니다(공백 불가, 32자 이하).",
-            )
-            return
-        norm = normalize_signal_type_name(raw)
-        if not self.project.rename_signal_type(old_name, norm):
-            QMessageBox.warning(
-                self,
-                "이름 변경 불가",
-                f"'{norm}' 신호유형이 이미 존재하거나 변경할 수 없습니다.",
-            )
-            return
-        self.refresh_table(select_name=norm)
-        self.signalTypesModified.emit()
+        norm = prompt_rename_signal_type(self, self.project, old_name)
+        if norm:
+            self.refresh_table(select_name=norm)
+            self.signalTypesModified.emit()
 
     def _on_color_clicked(self) -> None:
         t_name = self.selected_type_name()
-        if not t_name:
-            return
-        cur = self.project.signal_type_color(t_name)
-        initial = QColor(cur) if cur else QColor("#3b82f6")
-        chosen = QColorDialog.getColor(
-            initial, self, f"'{t_name}' 신호유형 색상 선택"
-        )
-        if chosen.isValid():
-            self.project.set_signal_type_color(t_name, chosen.name())
+        if t_name and pick_signal_type_color(self, self.project, t_name):
             self.refresh_table(select_name=t_name)
             self.signalTypesModified.emit()
 

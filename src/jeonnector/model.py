@@ -1094,6 +1094,16 @@ class Project:
                     sig.signal_type = ""
         return True
 
+    def signals_with_type(self, type_name: str) -> list[SignalDefinition]:
+        """프로젝트 전체 연결기에서 해당 신호유형을 쓰는 신호 목록."""
+        norm = normalize_signal_type_name(type_name)
+        return [
+            sig
+            for conn in self.connectors
+            for sig in conn.signals.values()
+            if sig.signal_type == norm
+        ]
+
     def signal_type_color(self, type_name: str) -> str:
         if not type_name:
             return ""

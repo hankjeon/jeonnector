@@ -37,6 +37,10 @@ from jeonnector.model import (
     normalize_signal_name,
     normalize_signal_type_name,
 )
+from jeonnector.ui.signal_type_dialog import (
+    pick_signal_type_color,
+    prompt_rename_signal_type,
+)
 
 COL_PIN = 0
 COL_SIGNAL = 1
@@ -817,31 +821,85 @@ class SignalTablePanel(QWidget):
             self._pick_signal_color(row)
 
     def _on_table_context_menu(self, pos) -> None:
-        if self.connector is None or self.project is None:
-            return
         item = self.table.itemAt(pos)
         if item is None:
             return
-        row = item.row()
-        if not (0 <= row < len(self.connector.rows)):
-            return
+        menu = self.build_cell_context_menu(item.row(), item.column())
+        if menu is not None:
+            menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def build_cell_context_menu(self, row: int, col: int) -> QMenu | None:
+        """셀 우클릭 메뉴. 신호유형 칸은 유형 메뉴, 그 밖의 칸은 신호 개별 색상 메뉴 (제3.10절)."""
+        if self.connector is None or self.project is None:
+            return None
+        if not (0 <= row < len(self.connector.rows)):
+            return None
         sig_name = self.connector.rows[row].signal_name
         sig = self.connector.get_signal(sig_name)
         menu = QMenu(self)
-        pick_color_act = menu.addAction(f"'{sig_name}' 색상 선택...")
+        if col == COL_SIGNAL_TYPE:
+            self._add_signal_type_actions(menu, row, sig.signal_type if sig else "")
+            return menu
+
+        menu.addAction(f"'{sig_name}' 색상 선택...").triggered.connect(
+            lambda: self._pick_signal_color(row)
+        )
         clear_color_act = menu.addAction(
             f"'{sig_name}' 색상 없음 (신호유형 색상 사용)"
         )
         clear_color_act.setEnabled(bool(sig and sig.color))
+        clear_color_act.triggered.connect(lambda: self._clear_signal_color(row))
+        return menu
 
-        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen == pick_color_act:
-            self._pick_signal_color(row)
-        elif chosen == clear_color_act:
-            self.connector.set_signal_color(sig_name, "")
-            self.refresh_table(preserve_row=row)
-            self.dataChanged.emit()
+    def _add_signal_type_actions(self, menu: QMenu, row: int, type_name: str) -> None:
+        if not type_name:
+            menu.addAction("신호유형 없음").setEnabled(False)
+            return
+        # 신호유형은 프로젝트 공용이므로 영향받는 신호 수를 함께 보여 준다.
+        count = len(self.project.signals_with_type(type_name))
+        menu.addAction(
+            f"'{type_name}' 유형 색상 변경... (프로젝트 신호 {count}개)"
+        ).triggered.connect(
+            lambda: self._change_signal_type_color(row, type_name, pick=True)
+        )
+        clear_act = menu.addAction(f"'{type_name}' 유형 색상 없음")
+        clear_act.setEnabled(bool(self.project.signal_type_color(type_name)))
+        clear_act.triggered.connect(
+            lambda: self._change_signal_type_color(row, type_name, pick=False)
+        )
+        menu.addAction(f"'{type_name}' 유형 이름 변경...").triggered.connect(
+            lambda: self._rename_signal_type(row, type_name)
+        )
+
+    def _change_signal_type_color(self, row: int, type_name: str, pick: bool) -> None:
+        if pick:
+            if not pick_signal_type_color(self, self.project, type_name):
+                return
+        else:
+            self.project.set_signal_type_color(type_name, "")
+        overridden = sum(1 for s in self.project.signals_with_type(type_name) if s.color)
+        if overridden:
+            self.statusMessage.emit(
+                f"개별 색상이 지정된 신호 {overridden}개는 '{type_name}' 유형 색상 대신 개별 색상으로 표시됩니다."
+            )
+        self.refresh_table(preserve_row=row)
+        self.dataChanged.emit()
+
+    def _rename_signal_type(self, row: int, type_name: str) -> None:
+        new_name = prompt_rename_signal_type(self, self.project, type_name)
+        if not new_name:
+            return
+        # 입력 중인 행이 바뀌기 전 이름을 쓰고 있으면 확정 시 옛 이름이 되살아나지 않게 따라 바꾼다.
+        if normalize_signal_type_name(self.draft.signal_type) == type_name:
+            self.draft.signal_type = new_name
+        self.refresh_table(preserve_row=row)
+        self.dataChanged.emit()
+
+    def _clear_signal_color(self, row: int) -> None:
+        sig_name = self.connector.rows[row].signal_name
+        self.connector.set_signal_color(sig_name, "")
+        self.refresh_table(preserve_row=row)
+        self.dataChanged.emit()
 
     def _pick_signal_color(self, row: int) -> None:
         if self.connector is None or self.project is None:

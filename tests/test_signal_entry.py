@@ -4,7 +4,16 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QMessageBox, QPushButton
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QApplication,
+    QColorDialog,
+    QComboBox,
+    QHeaderView,
+    QInputDialog,
+    QMessageBox,
+    QPushButton,
+)
 
 from jeonnector.model import Project
 from jeonnector.storage import PartLibrary, load_project, save_project
@@ -356,6 +365,57 @@ def test_column_widths_adjustable_scroll_and_remembered(window, qtbot, tmp_path)
 
     panel.set_column_widths([10, 20])  # 열 수가 다른 저장값은 무시한다.
     assert panel.column_widths() == widths
+
+
+def menu_actions(menu):
+    return {a.text(): a for a in menu.actions() if a.text()}
+
+
+def test_signal_type_cell_menu_color_and_rename(window, monkeypatch):
+    panel = window.signal_table_panel
+    project = window.project
+    add(panel, "PWR", "1", "전원")
+    add(panel, "VCC", "2", "전원")
+    add(panel, "NOTYPE", "3")
+    connector = window.current_connector
+    connector.set_signal_color("VCC", "#00ff00")
+    row = [r.signal_name for r in connector.rows].index("PWR")
+
+    # 신호유형 칸 외에는 기존 신호 개별 색상 메뉴, 입력 행에는 메뉴가 없다.
+    assert list(menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL))) == [
+        "'PWR' 색상 선택...", "'PWR' 색상 없음 (신호유형 색상 사용)",
+    ]
+    assert panel.build_cell_context_menu(len(connector.rows), COL_SIGNAL_TYPE) is None
+    no_type_row = [r.signal_name for r in connector.rows].index("NOTYPE")
+    no_type = menu_actions(panel.build_cell_context_menu(no_type_row, COL_SIGNAL_TYPE))
+    assert list(no_type) == ["신호유형 없음"] and not no_type["신호유형 없음"].isEnabled()
+
+    # 유형 색상 변경: 영향 신호 수 표시, 개별 색상 신호 안내, 변경 표시
+    actions = menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))
+    assert list(actions) == [
+        "'전원' 유형 색상 변경... (프로젝트 신호 2개)",
+        "'전원' 유형 색상 없음",
+        "'전원' 유형 이름 변경...",
+    ]
+    monkeypatch.setattr(QColorDialog, "getColor", lambda *a, **k: QColor("#123456"))
+    messages = []
+    panel.statusMessage.connect(messages.append)
+    window.mark_dirty(False)
+    actions["'전원' 유형 색상 변경... (프로젝트 신호 2개)"].trigger()
+    assert project.signal_type_color("전원") == "#123456"
+    assert window.is_dirty
+    assert "신호 1개" in messages[-1]
+    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'전원' 유형 색상 없음"].trigger()
+    assert project.signal_type_color("전원") == ""
+
+    # 유형 이름 변경: 모든 신호와 입력 중인 행이 새 이름을 따른다.
+    panel.apply_cell_edit(len(connector.rows), COL_SIGNAL_TYPE, "전원")
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("power", True))
+    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'전원' 유형 이름 변경..."].trigger()
+    assert "POWER" in project.signal_types and "전원" not in project.signal_types
+    assert connector.get_signal("PWR").signal_type == "POWER"
+    assert connector.get_signal("VCC").signal_type == "POWER"
+    assert panel.draft.signal_type == "POWER"
 
 
 def test_color_column_shows_individual_type_or_none(window):
