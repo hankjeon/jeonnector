@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QItemSelectionModel, QPointF, Qt
 from PySide6.QtGui import QKeyEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -353,5 +354,83 @@ def test_editor_new_part_outline_tools_and_snap(qapp: QApplication, tmp_path: Pa
     )
     stored = lib.get_part(part.uuid)
     assert stored is not None and stored.pins[0].x == pytest.approx(part.pins[0].x)
+    win.mark_dirty(False)
+    win.close()
+
+
+def test_editor_multi_select_and_group_move(qapp: QApplication, tmp_path: Path) -> None:
+    """영역 드래그·Ctrl+클릭 다중 선택, 핀 목록 표 연동, 간격을 유지한 그룹 이동 (제4.4~4.5절)."""
+    win = MainWindow(part_library=PartLibrary(storage_path=tmp_path / "lib.json"))
+    editor = win.editor_widget
+    editor.create_new_part()
+    part = editor.current_part
+    dialog = AutoPlacementDialog(part, snap_enabled=True, grid_spacing=editor.grid_spacing)
+    dialog.row_counts_edit.setText("3, 2")
+    part.pins, _ = dialog.build_pins()
+    editor.on_part_geometry_modified()
+    canvas = editor.canvas
+    viewport = canvas.viewport()
+    left, ctrl, none = (
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    def at(x: float, y: float):
+        return canvas.mapFromScene(QPointF(x, y))
+
+    def table_rows() -> set[int]:
+        return {i.row() for i in editor.pin_table.selectionModel().selectedRows()}
+
+    top_y = min(p.y for p in part.pins)
+    top = {i for i, p in enumerate(part.pins) if p.y == top_y}
+    bottom = set(range(len(part.pins))) - top
+    assert len(top) == 3 and len(bottom) == 2
+
+    # 빈 곳 드래그로 윗줄만 감싸 선택
+    QTest.mousePress(viewport, left, none, at(1.0, 1.0))
+    QTest.mouseMove(viewport, at(part.width - 1.0, top_y + 12.0))
+    assert canvas._rubber_rect is not None
+    QTest.mouseRelease(viewport, left, none, at(part.width - 1.0, top_y + 12.0))
+    assert canvas.selected_pins == top and table_rows() == top
+
+    # Ctrl+클릭: 추가·해제
+    b = min(bottom)
+    QTest.mouseClick(viewport, left, ctrl, at(part.pins[b].x, part.pins[b].y))
+    assert canvas.selected_pins == top | {b} and table_rows() == top | {b}
+    QTest.mouseClick(viewport, left, ctrl, at(part.pins[b].x, part.pins[b].y))
+    assert canvas.selected_pins == top
+
+    # 잡은 핀만 격자에 맞추고 나머지는 같은 거리만큼 옮긴다.
+    anchor = min(top)
+    part.pins[max(top)].x += 3.0  # 격자에서 벗어난 핀도 간격이 유지되어야 한다.
+    before = {i: (p.x, p.y) for i, p in enumerate(part.pins)}
+    ax, ay = before[anchor]
+    QTest.mousePress(viewport, left, none, at(ax, ay))
+    QTest.mouseMove(viewport, at(ax + 13.0, ay + 2.0))
+    QTest.mouseRelease(viewport, left, none, at(ax + 13.0, ay + 2.0))
+    shift = (part.pins[anchor].x - part.pins[b].x) - (ax - before[b][0])
+    assert shift == pytest.approx(editor.grid_spacing)
+    for i in top:
+        assert part.pins[i].x - part.pins[anchor].x == pytest.approx(before[i][0] - ax)
+        assert part.pins[i].y - part.pins[anchor].y == pytest.approx(before[i][1] - ay)
+    for i in bottom:
+        assert part.pins[i].x - part.pins[b].x == pytest.approx(before[i][0] - before[b][0])
+
+    # 표에서 여러 행을 고르면 캔버스 선택에 반영된다.
+    editor.pin_table.selectionModel().clearSelection()
+    editor.pin_table.selectRow(0)
+    editor.pin_table.selectionModel().select(
+        editor.pin_table.model().index(1, 0),
+        QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    assert canvas.selected_pins == {0, 1}
+
+    # 빈 곳 클릭과 Esc는 선택을 해제한다.
+    QTest.mouseClick(viewport, left, none, at(1.0, 1.0))
+    assert canvas.selected_pins == set() and table_rows() == set()
+    canvas.set_selected_pins({0})
+    QTest.keyClick(canvas, Qt.Key.Key_Escape)
+    assert canvas.selected_pins == set()
     win.mark_dirty(False)
     win.close()

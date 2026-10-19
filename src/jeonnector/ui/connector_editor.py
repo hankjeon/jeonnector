@@ -5,7 +5,14 @@ from __future__ import annotations
 import math
 from uuid import uuid4
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QItemSelection,
+    QItemSelectionModel,
+    QPointF,
+    QRectF,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -85,7 +92,8 @@ MIN_GRID_SCREEN_PX = 6.0
 HANDLE_SCREEN_PX = 8.0
 SELECT_MODE_HINT = (
     "도구 모드: 선택 / 이동 — 핀이나 외곽 핸들을 드래그해 이동합니다 "
-    "(다각형: 변 더블클릭 꼭짓점 추가 · 꼭짓점 우클릭 삭제 · 가운데 핸들 전체 이동)"
+    "(빈 곳 드래그: 영역 선택 · Ctrl+클릭: 선택 추가·해제 · 휠 버튼/스페이스+드래그: 화면 이동 · "
+    "다각형: 변 더블클릭 꼭짓점 추가 · 꼭짓점 우클릭 삭제 · 가운데 핸들 전체 이동)"
 )
 NEW_PART_WIDTH = 400.0
 NEW_PART_HEIGHT = 300.0
@@ -289,12 +297,16 @@ class EditorCanvas(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.mode: str = MODE_SELECT
-        self.selected_pin_index: int = -1
+        self.selected_pins: set[int] = set()
 
         # 드래그 상태
-        self._dragging_pin_index: int = -1
+        self._dragging_pin_index: int = -1  # 마우스로 잡은 핀(스냅 기준)
+        self._drag_origins: dict[int, tuple[float, float]] = {}  # 함께 옮길 핀의 시작 좌표
         self._dragging_handle: tuple[str, int] | None = None
         # ("poly_vertex", idx) | ("poly_center", 0) | ("circle_center", 0) | ("circle_radius", 0)
+        self._rubber_origin: QPointF | None = None
+        self._rubber_rect: QRectF | None = None
+        self._rubber_base: set[int] = set()  # Ctrl+영역 선택 시 유지할 기존 선택
         self._panning = False
         self._space_pressed = False
         self._pan_start = QPointF()
@@ -309,11 +321,20 @@ class EditorCanvas(QGraphicsView):
     def set_mode(self, mode: str) -> None:
         self.mode = mode
         self._dragging_pin_index = -1
+        self._drag_origins = {}
         self._dragging_handle = None
+        self._rubber_origin = None
+        self._rubber_rect = None
         if mode == MODE_SELECT:
             self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.setCursor(Qt.CursorShape.CrossCursor)
+        self.redraw()
+
+    def set_selected_pins(self, indices: set[int]) -> None:
+        """선택한 핀 집합을 바꾸고 핀 목록 표의 선택을 맞춘다."""
+        self.selected_pins = set(indices)
+        self.editor.select_pins_in_table(self.selected_pins)
         self.redraw()
 
     def fit_to_view(self) -> None:
@@ -359,6 +380,7 @@ class EditorCanvas(QGraphicsView):
         key = event.key()
         if key == Qt.Key.Key_Escape:
             self.editor.activate_tool_mode(MODE_SELECT)
+            self.set_selected_pins(set())
             event.accept()
             return
         if key == Qt.Key.Key_Space:
@@ -484,8 +506,7 @@ class EditorCanvas(QGraphicsView):
 
             pin_idx = self._hit_test_pin(raw_scene_pos)
             if pin_idx >= 0:
-                self.selected_pin_index = pin_idx
-                self.editor.select_pin_in_table(pin_idx)
+                self.set_selected_pins({pin_idx})
                 pin = part.pins[pin_idx]
                 menu = QMenu(self)
                 ren_act = menu.addAction(f"핀 '{pin.designator}' 번호 변경...")
@@ -505,7 +526,7 @@ class EditorCanvas(QGraphicsView):
                 event.accept()
                 return
 
-            # MODE_SELECT: 외곽 핸들 우선 판정 -> 핀 판정 -> 빈 공간 패닝
+            # MODE_SELECT: 외곽 핸들 우선 판정 -> 핀 판정 -> 빈 공간 영역 선택
             # 가운데 이동 핸들이 핀과 겹치면 핀을 우선한다.
             handle = self._hit_test_handle(raw_scene_pos)
             if handle is not None and handle[0] in ("poly_center", "circle_center"):
@@ -516,20 +537,30 @@ class EditorCanvas(QGraphicsView):
                 event.accept()
                 return
 
+            ctrl_down = bool(
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            )
             pin_idx = self._hit_test_pin(raw_scene_pos)
             if pin_idx >= 0:
-                self.selected_pin_index = pin_idx
+                if ctrl_down:
+                    # Ctrl+클릭: 핀 하나를 선택에 넣거나 뺀다.
+                    self.set_selected_pins(self.selected_pins ^ {pin_idx})
+                    event.accept()
+                    return
+                if pin_idx not in self.selected_pins:
+                    self.set_selected_pins({pin_idx})
+                # 잡은 핀을 기준으로 선택된 핀 전체를 함께 옮긴다.
                 self._dragging_pin_index = pin_idx
-                self.editor.select_pin_in_table(pin_idx)
-                self.redraw()
+                self._drag_origins = {
+                    i: (part.pins[i].x, part.pins[i].y) for i in self.selected_pins
+                }
                 event.accept()
                 return
 
-            self.selected_pin_index = -1
-            self._panning = True
-            self._pan_start = event.position()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
-            self.redraw()
+            # 빈 공간 드래그: 점선 사각형 영역 선택 (Ctrl: 기존 선택에 추가)
+            self._rubber_origin = raw_scene_pos
+            self._rubber_rect = QRectF(raw_scene_pos, raw_scene_pos)
+            self._rubber_base = set(self.selected_pins) if ctrl_down else set()
             event.accept()
             return
 
@@ -615,12 +646,24 @@ class EditorCanvas(QGraphicsView):
 
         part = self.editor.current_part
         if part is not None:
-            # 핀을 마우스로 드래그 이동 시 그리드·스냅 켜짐 상태면 그리드에 맞춰 좌표 변경 (제3.5절)
-            if 0 <= self._dragging_pin_index < len(part.pins):
-                pin = part.pins[self._dragging_pin_index]
-                pin.x = round(snapped.x(), 2)
-                pin.y = round(snapped.y(), 2)
-                self.editor.refresh_pin_table_row(self._dragging_pin_index)
+            # 핀을 마우스로 드래그 이동 시 그리드·스냅 켜짐 상태면 잡은 핀을 그리드에 맞추고,
+            # 함께 선택된 핀은 같은 거리만큼 옮겨 서로 간격을 유지한다 (제4.5절).
+            if self._dragging_pin_index in self._drag_origins:
+                ax, ay = self._drag_origins[self._dragging_pin_index]
+                dx = round(snapped.x(), 2) - ax
+                dy = round(snapped.y(), 2) - ay
+                for i, (ox, oy) in self._drag_origins.items():
+                    part.pins[i].x = round(ox + dx, 2)
+                    part.pins[i].y = round(oy + dy, 2)
+                    self.editor.refresh_pin_table_row(i)
+                self.redraw()
+                event.accept()
+                return
+
+            if self._rubber_origin is not None:
+                self._rubber_rect = QRectF(
+                    self._rubber_origin, raw_scene_pos
+                ).normalized()
                 self.redraw()
                 event.accept()
                 return
@@ -679,8 +722,23 @@ class EditorCanvas(QGraphicsView):
             )
             event.accept()
             return
+        if self._rubber_origin is not None:
+            # 중심이 사각형 안에 들어온 핀을 선택한다. 끌지 않은 클릭은 선택을 해제한다.
+            rect = self._rubber_rect or QRectF()
+            part = self.editor.current_part
+            inside = {
+                i
+                for i, pin in enumerate(part.pins if part else [])
+                if rect.contains(QPointF(pin.x, pin.y))
+            }
+            self._rubber_origin = None
+            self._rubber_rect = None
+            self.set_selected_pins(self._rubber_base | inside)
+            event.accept()
+            return
         if self._dragging_pin_index >= 0 or self._dragging_handle is not None:
             self._dragging_pin_index = -1
+            self._drag_origins = {}
             self._dragging_handle = None
             self.editor.on_part_geometry_modified()
             event.accept()
@@ -807,7 +865,7 @@ class EditorCanvas(QGraphicsView):
         )
         half = pin_diameter / 2.0
         for idx, pin in enumerate(part.pins):
-            is_sel = idx == self.selected_pin_index
+            is_sel = idx in self.selected_pins
             pen = QPen(
                 QColor("#0284c7" if is_sel else "#334155"),
                 3.2 if is_sel else 1.5,
@@ -839,6 +897,11 @@ class EditorCanvas(QGraphicsView):
         preview_pen = QPen(QColor("#2563eb"), 1.5, Qt.PenStyle.DashLine)
         preview_pen.setCosmetic(True)
         cur = self._cursor_scene_pos
+
+        if self._rubber_rect is not None:
+            self._scene.addRect(
+                self._rubber_rect, preview_pen, QBrush(QColor(37, 99, 235, 30))
+            )
 
         if self.mode == MODE_ADD_PIN:
             ghost_rect = QRectF(
@@ -1095,6 +1158,9 @@ class ConnectorEditorWidget(QMainWindow):
         self.pin_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        self.pin_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.pin_table.itemChanged.connect(self._on_pin_table_item_changed)
         self.pin_table.itemSelectionChanged.connect(
             self._on_pin_table_selection_changed
@@ -1210,7 +1276,7 @@ class ConnectorEditorWidget(QMainWindow):
         finally:
             self._syncing_ui = False
 
-        self.canvas.selected_pin_index = -1
+        self.canvas.selected_pins = set()
         self.canvas.redraw()
         self.canvas.fit_to_view()
 
@@ -1247,19 +1313,35 @@ class ConnectorEditorWidget(QMainWindow):
         finally:
             self._syncing_ui = False
 
-    def select_pin_in_table(self, idx: int) -> None:
+    def select_pins_in_table(self, indices: set[int]) -> None:
+        rows = sorted(i for i in indices if 0 <= i < self.pin_table.rowCount())
+        model = self.pin_table.model()
+        selection = QItemSelection()
+        for row in rows:
+            selection.select(
+                model.index(row, 0), model.index(row, model.columnCount() - 1)
+            )
         self._syncing_ui = True
         try:
-            if 0 <= idx < self.pin_table.rowCount():
-                self.pin_table.selectRow(idx)
+            sel_model = self.pin_table.selectionModel()
+            sel_model.select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect
+            )
+            if rows:
+                sel_model.setCurrentIndex(
+                    model.index(rows[0], 0),
+                    QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
+                self.pin_table.scrollTo(model.index(rows[0], 0))
         finally:
             self._syncing_ui = False
 
     def _on_pin_table_selection_changed(self) -> None:
         if self._syncing_ui:
             return
-        row = self.pin_table.currentRow()
-        self.canvas.selected_pin_index = row
+        self.canvas.selected_pins = {
+            index.row() for index in self.pin_table.selectionModel().selectedRows()
+        }
         self.canvas.redraw()
 
     def _can_use_pin_designator(
@@ -1392,7 +1474,7 @@ class ConnectorEditorWidget(QMainWindow):
                 display_order=len(self.current_part.pins) + 1,
             )
         )
-        self.canvas.selected_pin_index = len(self.current_part.pins) - 1
+        self.canvas.selected_pins = {len(self.current_part.pins) - 1}
         self.on_part_geometry_modified(rebuild_table=True)
 
     def _add_pin_from_table_btn(self) -> None:
@@ -1408,7 +1490,7 @@ class ConnectorEditorWidget(QMainWindow):
         ):
             return
         self.current_part.pins.pop(idx)
-        self.canvas.selected_pin_index = -1
+        self.canvas.selected_pins = set()
         self.on_part_geometry_modified(rebuild_table=True)
 
     def _delete_selected_pin_from_table(self) -> None:
