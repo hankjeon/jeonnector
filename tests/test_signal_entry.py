@@ -96,15 +96,15 @@ def test_draft_validation_reset_and_existing_properties(window, qtbot):
     assert "새유형" not in window.project.signal_types
     qtbot.mouseClick(panel.reset_button, Qt.MouseButton.LeftButton)
     assert not panel.has_draft()
-    add(panel, "GND", "1", "접지")
+    add(panel, "GND", "1", "GROUND")
     window.current_connector.set_signal_color("GND", "#123456")
     panel.draft_pin_combo.setEditText("2")
     panel.draft_name_combo.setEditText("gnd")
-    assert panel.draft_type_combo.currentText() == "접지"
+    assert panel.draft_type_combo.currentText() == "GROUND"
     assert panel.draft.color == "#123456"
     assert not panel.draft_type_combo.isEnabled()
     assert not panel.draft_color_button.isEnabled()
-    assert not panel.apply_cell_edit(1, COL_SIGNAL_TYPE, "전원")
+    assert not panel.apply_cell_edit(1, COL_SIGNAL_TYPE, "POWER")
     assert panel.commit_draft()
     assert window.current_connector.pins_for_signal("GND") == {"1", "2"}
     assert window.current_connector.get_signal("GND").color == "#123456"
@@ -136,8 +136,8 @@ def test_no_part_allows_unassigned_signal(window):
 @pytest.mark.parametrize("source", ["canvas", "table"])
 def test_unassign_resorts_and_preserves_draft(window, column, descending, source):
     panel = window.signal_table_panel
-    add(panel, "A", "1", "접지")
-    add(panel, "B", "2", "전원")
+    add(panel, "A", "1", "GROUND")
+    add(panel, "B", "2", "POWER")
     panel.sort_by_column(column, descending)
     panel.draft_pin_combo.setEditText("3")
     panel.draft_name_combo.setEditText("PENDING")
@@ -374,8 +374,8 @@ def menu_actions(menu):
 def test_signal_type_cell_menu_color_and_rename(window, monkeypatch):
     panel = window.signal_table_panel
     project = window.project
-    add(panel, "PWR", "1", "전원")
-    add(panel, "VCC", "2", "전원")
+    add(panel, "PWR", "1", "POWER")
+    add(panel, "VCC", "2", "POWER")
     add(panel, "NOTYPE", "3")
     connector = window.current_connector
     connector.set_signal_color("VCC", "#00ff00")
@@ -393,35 +393,35 @@ def test_signal_type_cell_menu_color_and_rename(window, monkeypatch):
     # 유형 색상 변경: 영향 신호 수 표시, 개별 색상 신호 안내, 변경 표시
     actions = menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))
     assert list(actions) == [
-        "'전원' 유형 색상 변경... (프로젝트 신호 2개)",
-        "'전원' 유형 색상 없음",
-        "'전원' 유형 이름 변경...",
+        "'POWER' 유형 색상 변경... (프로젝트 신호 2개)",
+        "'POWER' 유형 색상 없음",
+        "'POWER' 유형 이름 변경...",
     ]
     monkeypatch.setattr(QColorDialog, "getColor", lambda *a, **k: QColor("#123456"))
     messages = []
     panel.statusMessage.connect(messages.append)
     window.mark_dirty(False)
-    actions["'전원' 유형 색상 변경... (프로젝트 신호 2개)"].trigger()
-    assert project.signal_type_color("전원") == "#123456"
+    actions["'POWER' 유형 색상 변경... (프로젝트 신호 2개)"].trigger()
+    assert project.signal_type_color("POWER") == "#123456"
     assert window.is_dirty
     assert "신호 1개" in messages[-1]
-    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'전원' 유형 색상 없음"].trigger()
-    assert project.signal_type_color("전원") == ""
+    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'POWER' 유형 색상 없음"].trigger()
+    assert project.signal_type_color("POWER") == ""
 
     # 유형 이름 변경: 모든 신호와 입력 중인 행이 새 이름을 따른다.
-    panel.apply_cell_edit(len(connector.rows), COL_SIGNAL_TYPE, "전원")
-    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("power", True))
-    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'전원' 유형 이름 변경..."].trigger()
-    assert "POWER" in project.signal_types and "전원" not in project.signal_types
-    assert connector.get_signal("PWR").signal_type == "POWER"
-    assert connector.get_signal("VCC").signal_type == "POWER"
-    assert panel.draft.signal_type == "POWER"
+    panel.apply_cell_edit(len(connector.rows), COL_SIGNAL_TYPE, "POWER")
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("main_power", True))
+    menu_actions(panel.build_cell_context_menu(row, COL_SIGNAL_TYPE))["'POWER' 유형 이름 변경..."].trigger()
+    assert "MAIN_POWER" in project.signal_types and "POWER" not in project.signal_types
+    assert connector.get_signal("PWR").signal_type == "MAIN_POWER"
+    assert connector.get_signal("VCC").signal_type == "MAIN_POWER"
+    assert panel.draft.signal_type == "MAIN_POWER"
 
 
 def test_color_column_shows_individual_type_or_none(window):
     panel = window.signal_table_panel
-    window.project.set_signal_type_color("전원", "#ef4444")
-    add(panel, "PWR", "1", "전원")
+    window.project.set_signal_type_color("POWER", "#ef4444")
+    add(panel, "PWR", "1", "POWER")
     add(panel, "PLAIN", "2")
     panel.draft_name_combo.setEditText("CUSTOM")
     panel.draft_pin_combo.setEditText("3")
@@ -436,7 +436,7 @@ def test_color_column_shows_individual_type_or_none(window):
     assert labels["PWR"] == ("유형", "유형 색상 #ef4444")
     assert labels["PLAIN"] == ("없음", "색상 없음")
     assert labels["CUSTOM"] == ("개별", "개별 색상 #123456")
-    panel.draft_type_combo.setEditText("전원")
+    panel.draft_type_combo.setEditText("POWER")
     assert panel.draft_color_button.text() == "유형"
     panel.draft.color = "#00ff00"
     panel._update_draft_color_button()
@@ -471,8 +471,8 @@ def test_unassigned_pin_and_no_type_start_blank(window, qtbot):
     for combo, placeholder in ((panel.draft_pin_combo, "미할당"), (panel.draft_type_combo, "없음")):
         assert combo.currentText() == ""
         assert combo.lineEdit().placeholderText() == placeholder
-    panel.draft_type_combo.setEditText("전원")  # QTest는 한글 키 입력을 지원하지 않는다.
-    assert panel.draft.signal_type == "전원"
+    qtbot.keyClicks(panel.draft_type_combo.lineEdit(), "POWER")
+    assert panel.draft.signal_type == "POWER"
     panel.draft_type_combo.textActivated.emit("없음")
     assert panel.draft_type_combo.currentText() == "" and panel.draft.signal_type == ""
 

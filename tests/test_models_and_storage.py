@@ -354,20 +354,20 @@ def test_row_rename_copies_or_follows_signal_attributes() -> None:
     project = Project(name="이름변경")
     part = create_default_parts()[0]
     conn = project.add_connector("J1", part)
-    assert conn.add_signal_row("GDN", "1", part, "접지", "#111111")
+    assert conn.add_signal_row("GDN", "1", part, "GROUND", "#111111")
     assert conn.add_signal_row("GDN", "2", part)
-    assert conn.add_signal_row("VCC", "3", part, "전원", "")
+    assert conn.add_signal_row("VCC", "3", part, "POWER", "")
 
     gdn_row = next(i for i, r in enumerate(conn.rows) if r.pin_designator == "1")
     assert conn.add_or_update_row_signal(gdn_row, "GND")
     gnd = conn.get_signal("GND")
-    assert (gnd.signal_type, gnd.color) == ("접지", "#111111")
+    assert (gnd.signal_type, gnd.color) == ("GROUND", "#111111")
     old = conn.get_signal("GDN")
-    assert (old.signal_type, old.color) == ("접지", "#111111")  # 복사이며 이전 신호는 유지
+    assert (old.signal_type, old.color) == ("GROUND", "#111111")  # 복사이며 이전 신호는 유지
 
     vcc_row = next(i for i, r in enumerate(conn.rows) if r.signal_name == "VCC")
     assert conn.add_or_update_row_signal(vcc_row, "GND")
-    assert conn.get_signal("GND").signal_type == "접지"
+    assert conn.get_signal("GND").signal_type == "GROUND"
     assert conn.get_signal("VCC") is None
 
 
@@ -430,7 +430,7 @@ def test_command_history_undo_redo_limit_and_saved_state() -> None:
 
     commands.add_connector("J1", part)
     conn = project.get_connector("J1")
-    conn.add_signal_row("GND", "1", part, "접지")
+    conn.add_signal_row("GND", "1", part, "GROUND")
     assert commands.record("신호 추가", focus="J1")
     conn.flip_horizontal = True
     commands.record("좌우 반전", focus="J1")
@@ -485,3 +485,16 @@ def test_state_history_undo_redo_and_limit() -> None:
     for i in range(150):
         history.record(f"{i}", {"v": 100 + i})
     assert history.history_count == 100
+
+
+def test_default_signal_types_for_new_project() -> None:
+    """새 프로젝트의 기본 신호유형 5종과 색상 (제6.1절). 기존 프로젝트는 저장된 목록을 유지한다."""
+    assert Project().signal_types == {
+        "POWER": "#dc2626",
+        "GROUND": "#8b5a2b",
+        "CHASSIS": "#4b5563",
+        "ANALOG": "#16a34a",
+        "DISCRETE": "#2563eb",
+    }
+    old = Project.from_dict({"schema_version": 1, "signal_types": {"전원": "#ef4444"}})
+    assert old.signal_types == {"전원": "#ef4444"}

@@ -113,7 +113,7 @@ def test_main_window_layout_and_workflow(
     assert win.signal_table_panel.table.rowCount() == 4
 
     # 5. 신호유형 설정 및 새 신호유형 직접 입력 추가 확인 (제3.10절)
-    assert win.signal_table_panel.apply_cell_edit(0, COL_SIGNAL_TYPE, "접지")
+    assert win.signal_table_panel.apply_cell_edit(0, COL_SIGNAL_TYPE, "GROUND")
     assert win.signal_table_panel.apply_cell_edit(
         2, COL_SIGNAL_TYPE, "사용자전원유형"
     )
@@ -122,7 +122,7 @@ def test_main_window_layout_and_workflow(
     assert win.project.signal_type_color("사용자전원유형") == ""
     # 같은 신호(GND)의 다른 행에도 신호유형이 즉시 공유 반영되어야 함
     assert (
-        win.signal_table_panel.table.item(1, COL_SIGNAL_TYPE).text() == "접지"
+        win.signal_table_panel.table.item(1, COL_SIGNAL_TYPE).text() == "GROUND"
     )
 
     # 6. 신호 중복 표시 및 상태바 경고 집계 확인 (제3.4절, 제3.9절, 제3.12절)
