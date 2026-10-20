@@ -482,3 +482,34 @@ def test_editor_undo_redo_per_part(qapp: QApplication, tmp_path: Path) -> None:
     assert not win.undo_act.isEnabled()
     win.mark_dirty(False)
     win.close()
+
+
+def test_signal_label_size_caps_and_reveals_more_text_on_zoom(qapp: QApplication, tmp_path: Path) -> None:
+    """신호명 글자는 화면 11px에서 더 커지지 않고, 확대로 넓어진 핀 간격만큼 더 많이 보인다 (제3.4절)."""
+    win = MainWindow(part_library=PartLibrary(storage_path=tmp_path / "label_lib.json"))
+    part = win.part_library.list_parts()[0]
+    win.add_connector("J1", part)
+    conn = win.current_connector
+    long_name = "HEATER_POWER_28V_MAIN_BUS"
+    conn.add_signal_row(long_name, "1", part)
+    canvas = win.pinmap_panel.canvas
+
+    def label_at(zoom: float):
+        canvas._auto_fit_on_resize = False
+        canvas.resetTransform()
+        canvas.scale(zoom, zoom)
+        canvas.redraw()
+        item = next(
+            item for item in canvas.scene().items()
+            if item.data(Qt.ItemDataRole.UserRole) == long_name
+        )
+        return item.text(), item.font().pixelSize()  # 다음 redraw에서 항목이 지워지므로 값만 읽는다.
+
+    (near, near_px), (mid, mid_px), (far, far_px) = label_at(1.5), label_at(3.0), label_at(12.0)
+    assert near_px < 11
+    assert mid_px == far_px == 11
+    assert near.endswith("…") and mid.endswith("…")
+    assert len(near) < len(mid)
+    assert far == long_name
+    win.mark_dirty(False)
+    win.close()

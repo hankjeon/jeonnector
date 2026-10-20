@@ -8,14 +8,17 @@ from PySide6.QtGui import (
     QBrush,
     QColor,
     QFont,
+    QFontMetricsF,
     QPainter,
     QPainterPath,
     QPen,
     QPolygonF,
+    QTransform,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGraphicsItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -51,7 +54,10 @@ SIGNAL_LABEL_MIN_SCREEN_PX = 20.0
 AURA_ALPHA = 68
 # 신호 색상과 신호유형 색상이 모두 '없음'인 신호의 주변 영역 색상
 AURA_FALLBACK_COLOR = "#94a3b8"
-MAX_INLINE_SIGNAL_CHARS = 10
+# 신호명 글자 크기: 그림 좌표 기준 크기로 핀과 함께 커지다가 화면 기준 상한에서 멈춘다.
+# 표시 폭은 핀 간격이며, 넘치면 뒷부분을 줄임표로 줄인다 (제3.4절).
+SIGNAL_LABEL_SCENE_PX = 6.5
+SIGNAL_LABEL_MAX_SCREEN_PX = 11.0
 
 
 class ScrollableSignalMenu(QMenu):
@@ -504,6 +510,9 @@ class PinmapCanvas(QGraphicsView):
         dup_pins = self._connector.duplicate_pins()
         show_signal_labels = self.should_show_signal_labels()
 
+        zoom = self.current_zoom_scale
+        label_px = min(SIGNAL_LABEL_MAX_SCREEN_PX, SIGNAL_LABEL_SCENE_PX * zoom)
+        label_width_px = min_dist * zoom
         for pin in self._part.pins:
             self._draw_single_pin(
                 pin=pin,
@@ -515,6 +524,8 @@ class PinmapCanvas(QGraphicsView):
                 is_duplicate=(pin.designator in dup_pins),
                 is_bold=(pin.designator == self._selected_pin),
                 show_signal_labels=show_signal_labels,
+                label_px=label_px,
+                label_width_px=label_width_px,
             )
 
     def _draw_single_pin(
@@ -528,6 +539,8 @@ class PinmapCanvas(QGraphicsView):
         is_duplicate: bool,
         is_bold: bool,
         show_signal_labels: bool,
+        label_px: float = SIGNAL_LABEL_MAX_SCREEN_PX,
+        label_width_px: float = 0.0,
     ) -> None:
         assert self._connector is not None
         px = display_pin_x(pin.x, width, flip)
@@ -608,29 +621,28 @@ class PinmapCanvas(QGraphicsView):
             py - num_bounds.height() / 2.0,
         )
 
-        # 충분히 확대되었을 때(또는 신호 중복 시) 신호명 표시 (긴 신호명은 줄임표 처리, 제3.4절)
+        # 충분히 확대되었을 때(또는 신호 중복 시) 신호명 표시 (제3.4절)
+        # 화면 픽셀 단위로 그려 글자 크기는 상한에서 멈추고, 핀 간격에 들어가는 만큼 보여 준다.
         if signal_label and (show_signal_labels or is_duplicate):
-            display_label = signal_label
-            if (
-                not is_duplicate
-                and len(signal_label) > MAX_INLINE_SIGNAL_CHARS
-            ):
-                display_label = (
-                    signal_label[: MAX_INLINE_SIGNAL_CHARS - 1] + "…"
-                )
-            sig_font = QFont("Malgun Gothic", 5)
+            sig_font = QFont("Malgun Gothic")
+            sig_font.setPixelSize(max(1, round(label_px)))
             if is_duplicate or is_bold:
                 sig_font.setBold(True)
+            display_label = signal_label
+            if not is_duplicate and label_width_px > 0:
+                display_label = QFontMetricsF(sig_font).elidedText(
+                    signal_label, Qt.TextElideMode.ElideRight, label_width_px
+                )
             sig_item = self._scene.addSimpleText(display_label, sig_font)
+            sig_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
             sig_item.setData(Qt.ItemDataRole.UserRole, signal_label)
             sig_item.setToolTip(tooltip_text)
             sig_item.setBrush(
                 QBrush(QColor("#b91c1c" if is_duplicate else "#1e293b"))
             )
-            sig_bounds = sig_item.boundingRect()
-            sig_item.setPos(
-                px - sig_bounds.width() / 2.0,
-                py + half + 1.2,
+            sig_item.setPos(px, py + half + 1.2)
+            sig_item.setTransform(
+                QTransform.fromTranslate(-sig_item.boundingRect().width() / 2.0, 0.0)
             )
 
 
