@@ -1103,15 +1103,19 @@ class ConnectorEditorWidget(QMainWindow):
         lib_layout.addLayout(crud_row)
 
         io_row = QHBoxLayout()
-        self.import_btn = QPushButton("부품 가져오기...")
-        self.export_btn = QPushButton("선택 부품 내보내기...")
+        # 도크 최소 너비를 줄이도록 버튼 문구는 짧게, 자세한 설명은 툴팁으로 둔다 (제4.1절).
+        self.import_btn = QPushButton("가져오기...")
+        self.import_btn.setToolTip("부품 파일(JSON)에서 부품 가져오기")
+        self.export_btn = QPushButton("내보내기...")
+        self.export_btn.setToolTip("목록에서 선택한 부품을 파일(JSON)로 내보내기")
         self.import_btn.clicked.connect(self.import_parts_dialog)
         self.export_btn.clicked.connect(self.export_selected_parts_dialog)
         io_row.addWidget(self.import_btn)
         io_row.addWidget(self.export_btn)
         lib_layout.addLayout(io_row)
 
-        self.restore_defaults_btn = QPushButton("기본 부품 27종 복원")
+        self.restore_defaults_btn = QPushButton("기본 부품 복원")
+        self.restore_defaults_btn.setToolTip("기본 부품 27종을 원래 정의로 되돌리거나 다시 추가")
         self.restore_defaults_btn.clicked.connect(self.restore_default_parts)
         lib_layout.addWidget(self.restore_defaults_btn)
 
@@ -1130,14 +1134,14 @@ class ConnectorEditorWidget(QMainWindow):
         prop_layout = QVBoxLayout(prop_panel)
         prop_layout.setContentsMargins(6, 6, 6, 6)
 
-        info_group = QGroupBox("부품 기본 정보 및 핀 모양·크기")
+        info_group = QGroupBox("부품 정보")
         info_form = QFormLayout(info_group)
         self.family_edit = QLineEdit()
         self.variant_edit = QLineEdit()
         self.desc_edit = QLineEdit()
 
         self.pin_shape_combo = QComboBox()
-        self.pin_shape_combo.addItem("자동 (1번 사각 / 나머지 원형)", "AUTO")
+        self.pin_shape_combo.addItem("자동 (1번만 사각)", "AUTO")
         self.pin_shape_combo.addItem("원형", "CIRCLE")
         self.pin_shape_combo.addItem("사각형", "SQUARE")
 
@@ -1152,14 +1156,15 @@ class ConnectorEditorWidget(QMainWindow):
         self.pin_shape_combo.currentIndexChanged.connect(self._apply_pin_style_edits)
         self.pin_size_spin.valueChanged.connect(self._apply_pin_style_edits)
 
-        info_form.addRow("분류 (Family):", self.family_edit)
-        info_form.addRow("세부명 (Variant):", self.variant_edit)
+        info_form.addRow("분류:", self.family_edit)
+        info_form.addRow("세부명:", self.variant_edit)
         info_form.addRow("설명:", self.desc_edit)
         info_form.addRow("핀 모양:", self.pin_shape_combo)
         info_form.addRow("핀 크기:", self.pin_size_spin)
         prop_layout.addWidget(info_group)
 
-        pin_group = QGroupBox("핀 번호 및 좌표 (대소문자 구분, 중복 불가)")
+        pin_group = QGroupBox("핀 목록")
+        pin_group.setToolTip("핀 번호는 대소문자를 구분하며 부품 안에서 중복될 수 없습니다.")
         pin_vlayout = QVBoxLayout(pin_group)
         self.pin_table = QTableWidget(0, 3)
         self.pin_table.setHorizontalHeaderLabels(["핀 번호", "X 좌표", "Y 좌표"])
@@ -1179,8 +1184,9 @@ class ConnectorEditorWidget(QMainWindow):
         pin_vlayout.addWidget(self.pin_table, 1)
 
         pin_btn_row = QHBoxLayout()
-        add_pin_row_btn = QPushButton("+ 핀 행 추가")
-        del_pin_row_btn = QPushButton("- 선택 핀 삭제")
+        add_pin_row_btn = QPushButton("+ 핀 추가")
+        del_pin_row_btn = QPushButton("- 핀 삭제")
+        del_pin_row_btn.setToolTip("핀 목록에서 선택한 핀 삭제")
         add_pin_row_btn.clicked.connect(self._add_pin_from_table_btn)
         del_pin_row_btn.clicked.connect(self._delete_selected_pin_from_table)
         pin_btn_row.addWidget(add_pin_row_btn)
