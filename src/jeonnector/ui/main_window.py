@@ -351,6 +351,7 @@ class MainWindow(QMainWindow):
         self.editor_widget.libraryUpdated.connect(
             self._refresh_available_parts
         )
+        self.editor_widget.historyChanged.connect(self._update_undo_actions)
 
         self.stack.addWidget(self.project_workspace)
         self.stack.addWidget(self.editor_widget)
@@ -487,12 +488,13 @@ class MainWindow(QMainWindow):
         self._update_undo_actions()
 
     def _update_undo_actions(self) -> None:
-        in_project_view = self.stack.currentIndex() == 0
+        # 편집기 화면에서는 선택한 부품의 이력, 메인 화면에서는 프로젝트 이력을 쓴다 (제3.13절).
+        source = self.editor_widget if self.stack.currentIndex() == 1 else self.commands
         for act, label, available, text in (
-            (self.undo_act, "실행 취소", self.commands.can_undo(), self.commands.undo_description()),
-            (self.redo_act, "다시 실행", self.commands.can_redo(), self.commands.redo_description()),
+            (self.undo_act, "실행 취소", source.can_undo(), source.undo_description()),
+            (self.redo_act, "다시 실행", source.can_redo(), source.redo_description()),
         ):
-            act.setEnabled(in_project_view and available)
+            act.setEnabled(available)
             act.setText(f"{label}: {text}" if available else label)
 
     def undo(self) -> bool:
@@ -503,8 +505,13 @@ class MainWindow(QMainWindow):
 
     def _step_history(self, redo: bool) -> bool:
         """실행 취소·다시 실행 후 그 편집의 연결기를 선택해 보여 준다 (제3.13절)."""
-        if self.stack.currentIndex() != 0:
-            return False
+        label = "다시 실행" if redo else "실행 취소"
+        if self.stack.currentIndex() == 1:
+            description = self.editor_widget.redo() if redo else self.editor_widget.undo()
+            if description:
+                self.statusBar().showMessage(f"{label}: {description}", 4000)
+            self._update_undo_actions()
+            return bool(description)
         if not (self.commands.can_redo() if redo else self.commands.can_undo()):
             return False
         if not self._resolve_signal_draft():
@@ -520,7 +527,6 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar(select_designator=focus, keep_table_state=True)
         self.mark_dirty(not self.commands.is_at_saved_state())
         self._update_undo_actions()
-        label = "다시 실행" if redo else "실행 취소"
         self.statusBar().showMessage(f"{label}: {step.description}", 4000)
         return True
 

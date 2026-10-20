@@ -45,6 +45,60 @@ def project_state(project: Project) -> dict[str, Any]:
     return state
 
 
+class StateHistory:
+    """상태 스냅샷 하나를 대상으로 하는 실행 취소·다시 실행 이력 (부품 편집기의 부품별 이력, 제3.13절)."""
+
+    def __init__(self, state: dict[str, Any], limit: int = HISTORY_LIMIT) -> None:
+        self._limit = limit
+        self._current = copy.deepcopy(state)
+        self._undo: list[tuple[str, dict[str, Any]]] = []
+        self._redo: list[tuple[str, dict[str, Any]]] = []
+
+    @property
+    def history_count(self) -> int:
+        return len(self._undo)
+
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def undo_description(self) -> str:
+        return self._undo[-1][0] if self._undo else ""
+
+    def redo_description(self) -> str:
+        return self._redo[-1][0] if self._redo else ""
+
+    def record(self, description: str, state: dict[str, Any]) -> bool:
+        """편집을 마친 상태를 기록한다. 바뀌었으면 이전 상태를 한 단계로 남긴다."""
+        if state == self._current:
+            return False
+        self._undo.append((description, self._current))
+        del self._undo[: -self._limit]
+        self._redo.clear()
+        self._current = copy.deepcopy(state)
+        return True
+
+    def undo(self) -> tuple[str, dict[str, Any]] | None:
+        """한 단계 되돌리고 (설명, 되돌린 상태)를 반환한다."""
+        if not self._undo:
+            return None
+        description, state = self._undo.pop()
+        self._redo.append((description, self._current))
+        self._current = state
+        return description, copy.deepcopy(state)
+
+    def redo(self) -> tuple[str, dict[str, Any]] | None:
+        """되돌린 단계를 다시 실행하고 (설명, 다시 실행한 상태)를 반환한다."""
+        if not self._redo:
+            return None
+        description, state = self._redo.pop()
+        self._undo.append((description, self._current))
+        self._current = state
+        return description, copy.deepcopy(state)
+
+
 class CommandDispatcher:
     """편집 명령을 실행하고 편집 이력으로 실행 취소·다시 실행을 제공하는 편집 계층."""
 

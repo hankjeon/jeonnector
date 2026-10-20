@@ -465,3 +465,23 @@ def test_command_history_undo_redo_limit_and_saved_state() -> None:
     removed.remove_connector("J1")
     assert removed.undo().focus_before == "J1"
     assert project.get_connector("J1") is not None
+
+
+def test_state_history_undo_redo_and_limit() -> None:
+    """부품 편집기용 상태 이력: 기록·되돌리기·다시 실행·100단계 제한 (제3.13절)."""
+    from jeonnector.commands import StateHistory
+
+    history = StateHistory({"v": 0})
+    assert not history.record("같음", {"v": 0})
+    history.record("하나", {"v": 1})
+    history.record("둘", {"v": 2})
+    assert history.undo() == ("둘", {"v": 1})
+    assert history.redo_description() == "둘"
+    assert history.undo() == ("하나", {"v": 0})
+    assert history.undo() is None
+    assert history.redo() == ("하나", {"v": 1})
+    history.record("셋", {"v": 3})
+    assert not history.can_redo()
+    for i in range(150):
+        history.record(f"{i}", {"v": 100 + i})
+    assert history.history_count == 100

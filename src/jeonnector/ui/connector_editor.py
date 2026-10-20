@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from jeonnector.commands import StateHistory
 from jeonnector.default_parts import (
     PIN_PITCH,
     PIN_SIZE,
@@ -318,6 +319,14 @@ class EditorCanvas(QGraphicsView):
     def current_zoom_scale(self) -> float:
         return abs(self.transform().m11())
 
+    def mode_is_idle(self) -> bool:
+        """드래그나 영역 선택 중이 아닌지 (실행 취소는 조작이 끝난 뒤에만 한다)."""
+        return (
+            self._dragging_pin_index < 0
+            and self._dragging_handle is None
+            and self._rubber_rect is None
+        )
+
     def set_mode(self, mode: str) -> None:
         self.mode = mode
         self._dragging_pin_index = -1
@@ -500,7 +509,7 @@ class EditorCanvas(QGraphicsView):
                 del_act.setEnabled(len(pts) > 3)
                 if menu.exec(event.globalPosition().toPoint()) == del_act:
                     pts.pop(v_idx)
-                    self.editor.on_part_geometry_modified()
+                    self.editor.on_part_geometry_modified(description="외곽 꼭짓점 삭제")
                 event.accept()
                 return
 
@@ -584,7 +593,7 @@ class EditorCanvas(QGraphicsView):
                             edge_idx + 1,
                             [round(snapped.x(), 2), round(snapped.y(), 2)],
                         )
-                        self.editor.on_part_geometry_modified()
+                        self.editor.on_part_geometry_modified(description="외곽 꼭짓점 추가")
                         event.accept()
                         return
         super().mouseDoubleClickEvent(event)
@@ -740,7 +749,7 @@ class EditorCanvas(QGraphicsView):
             self._dragging_pin_index = -1
             self._drag_origins = {}
             self._dragging_handle = None
-            self.editor.on_part_geometry_modified()
+            self.editor.on_part_geometry_modified(description="핀·외곽 이동")
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -923,6 +932,7 @@ class ConnectorEditorWidget(QMainWindow):
 
     backToProjectRequested = Signal()
     libraryUpdated = Signal()
+    historyChanged = Signal()
 
     def __init__(
         self,
@@ -933,6 +943,8 @@ class ConnectorEditorWidget(QMainWindow):
         self.part_library = part_library
         self.current_part: ConnectorPart | None = None
         self._syncing_ui = False
+        # 제3.13절: 부품별 실행 취소 이력 (프로그램 실행 중 유지)
+        self._histories: dict[str, StateHistory] = {}
 
         self.setDockNestingEnabled(True)
         self._build_toolbar()
@@ -1262,6 +1274,14 @@ class ConnectorEditorWidget(QMainWindow):
         if part is None:
             return
         self.current_part = part.clone()
+        if part_uuid not in self._histories:
+            self._histories[part_uuid] = StateHistory(self.current_part.to_dict())
+        self._show_current_part()
+        self.canvas.fit_to_view()
+        self.historyChanged.emit()
+
+    def _show_current_part(self) -> None:
+        """현재 부품의 정보·핀 목록·캔버스를 다시 표시한다."""
         self._syncing_ui = True
         try:
             self.family_edit.setText(self.current_part.family)
@@ -1278,7 +1298,61 @@ class ConnectorEditorWidget(QMainWindow):
 
         self.canvas.selected_pins = set()
         self.canvas.redraw()
-        self.canvas.fit_to_view()
+
+    def _current_history(self) -> StateHistory | None:
+        if self.current_part is None:
+            return None
+        return self._histories.get(self.current_part.uuid)
+
+    def can_undo(self) -> bool:
+        history = self._current_history()
+        return history is not None and history.can_undo()
+
+    def can_redo(self) -> bool:
+        history = self._current_history()
+        return history is not None and history.can_redo()
+
+    def undo_description(self) -> str:
+        history = self._current_history()
+        return history.undo_description() if history else ""
+
+    def redo_description(self) -> str:
+        history = self._current_history()
+        return history.redo_description() if history else ""
+
+    def _record_part_edit(self, description: str) -> None:
+        history = self._current_history()
+        if history is not None and history.record(description, self.current_part.to_dict()):
+            self.historyChanged.emit()
+
+    def undo(self) -> str:
+        """현재 부품의 편집을 한 단계 되돌리고 그 설명을 반환한다 (없으면 빈 문자열)."""
+        return self._step_history(redo=False)
+
+    def redo(self) -> str:
+        return self._step_history(redo=True)
+
+    def _step_history(self, redo: bool) -> str:
+        history = self._current_history()
+        step = None
+        if history is not None and self.canvas.mode_is_idle():
+            step = history.redo() if redo else history.undo()
+        if step is None:
+            return ""
+        description, state = step
+        self.current_part = ConnectorPart.from_dict(state)
+        self._show_current_part()
+        self.save_current_part_to_library()
+        self._update_current_list_item()
+        self.historyChanged.emit()
+        return description
+
+    def _update_current_list_item(self) -> None:
+        curr_item = self.part_list_widget.currentItem()
+        if curr_item is not None and self.current_part is not None:
+            curr_item.setText(
+                f"{self.current_part.name} ({self.current_part.pin_count}핀)"
+            )
 
     def _populate_pin_table(self) -> None:
         if self.current_part is None:
@@ -1385,7 +1459,7 @@ class ConnectorEditorWidget(QMainWindow):
             except ValueError:
                 pass
         self.refresh_pin_table_row(row)
-        self.on_part_geometry_modified(rebuild_table=False)
+        self.on_part_geometry_modified(rebuild_table=False, description="핀 목록 편집")
 
     def _apply_meta_edits(self) -> None:
         if self._syncing_ui or self.current_part is None:
@@ -1412,11 +1486,8 @@ class ConnectorEditorWidget(QMainWindow):
         self.current_part.variant = new_variant
         self.current_part.description = self.desc_edit.text().strip()
         self.save_current_part_to_library()
-        curr_item = self.part_list_widget.currentItem()
-        if curr_item is not None:
-            curr_item.setText(
-                f"{self.current_part.name} ({self.current_part.pin_count}핀)"
-            )
+        self._update_current_list_item()
+        self._record_part_edit("부품 정보 변경")
 
     def _apply_pin_style_edits(self) -> None:
         if self._syncing_ui or self.current_part is None:
@@ -1425,9 +1496,11 @@ class ConnectorEditorWidget(QMainWindow):
             self.pin_shape_combo.currentData() or "AUTO"
         )
         self.current_part.pin_size = round(self.pin_size_spin.value(), 2)
-        self.on_part_geometry_modified(rebuild_table=False)
+        self.on_part_geometry_modified(rebuild_table=False, description="핀 모양·크기 변경")
 
-    def on_part_geometry_modified(self, rebuild_table: bool = True) -> None:
+    def on_part_geometry_modified(
+        self, rebuild_table: bool = True, description: str = "부품 편집"
+    ) -> None:
         if self.current_part is None:
             return
         for idx, pin in enumerate(self.current_part.pins, 1):
@@ -1440,14 +1513,11 @@ class ConnectorEditorWidget(QMainWindow):
         if rebuild_table:
             self._populate_pin_table()
         self.save_current_part_to_library()
-        curr_item = self.part_list_widget.currentItem()
-        if curr_item is not None:
-            curr_item.setText(
-                f"{self.current_part.name} ({self.current_part.pin_count}핀)"
-            )
+        self._update_current_list_item()
         self.canvas.redraw()
         if dx or dy:
             self.canvas.centerOn(view_center + QPointF(dx, dy))
+        self._record_part_edit(description)
 
     def save_current_part_to_library(self) -> None:
         if self.current_part is None:
@@ -1475,7 +1545,7 @@ class ConnectorEditorWidget(QMainWindow):
             )
         )
         self.canvas.selected_pins = {len(self.current_part.pins) - 1}
-        self.on_part_geometry_modified(rebuild_table=True)
+        self.on_part_geometry_modified(rebuild_table=True, description=f"핀 {des} 추가")
 
     def _add_pin_from_table_btn(self) -> None:
         if self.current_part is None:
@@ -1489,9 +1559,11 @@ class ConnectorEditorWidget(QMainWindow):
             0 <= idx < len(self.current_part.pins)
         ):
             return
-        self.current_part.pins.pop(idx)
+        removed = self.current_part.pins.pop(idx)
         self.canvas.selected_pins = set()
-        self.on_part_geometry_modified(rebuild_table=True)
+        self.on_part_geometry_modified(
+            rebuild_table=True, description=f"핀 {removed.designator} 삭제"
+        )
 
     def _delete_selected_pin_from_table(self) -> None:
         row = self.pin_table.currentRow()
@@ -1519,7 +1591,7 @@ class ConnectorEditorWidget(QMainWindow):
                 )
                 return
             pin.designator = text
-            self.on_part_geometry_modified(rebuild_table=True)
+            self.on_part_geometry_modified(rebuild_table=True, description="핀 번호 변경")
 
     def open_auto_placement_dialog(self) -> None:
         if self.current_part is None:
@@ -1541,14 +1613,14 @@ class ConnectorEditorWidget(QMainWindow):
                         np.designator = next_pin_designator(list(existing_des))
                     existing_des.add(np.designator)
                     self.current_part.pins.append(np)
-            self.on_part_geometry_modified(rebuild_table=True)
+            self.on_part_geometry_modified(rebuild_table=True, description="핀 자동 배치")
 
     def _set_outline(self, outline: OutlineGraphic) -> None:
         if self.current_part is None:
             return
         self.current_part.graphics = [outline]
         self.activate_tool_mode(MODE_SELECT)
-        self.on_part_geometry_modified(rebuild_table=False)
+        self.on_part_geometry_modified(rebuild_table=False, description="외곽 생성")
 
     def create_polygon_outline(self) -> None:
         """기존 외곽을 핀 배열에 맞춘 사각형 다각형으로 바꾼다 (제4.4절)."""
@@ -1584,7 +1656,7 @@ class ConnectorEditorWidget(QMainWindow):
                 return False
         self.current_part.pins = snapped.pins
         self.current_part.graphics = snapped.graphics
-        self.on_part_geometry_modified(rebuild_table=True)
+        self.on_part_geometry_modified(rebuild_table=True, description="스냅에 맞추기")
         return True
 
     def create_new_part(self) -> None:
@@ -1625,6 +1697,7 @@ class ConnectorEditorWidget(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if ans == QMessageBox.StandardButton.Yes:
+            self._histories.pop(self.current_part.uuid, None)
             self.part_library.delete_part(self.current_part.uuid, save_now=True)
             self.refresh_part_list()
             self.libraryUpdated.emit()
@@ -1632,6 +1705,8 @@ class ConnectorEditorWidget(QMainWindow):
     def restore_default_parts(self) -> None:
         """제4.6절: 기본 부품 27종을 원래 정의로 되돌리거나 다시 추가한다."""
         restored = self.part_library.restore_default_parts(save_now=True)
+        # 복원은 부품 정의와 이름을 바꿀 수 있어 기존 이력이 맞지 않으므로 비운다.
+        self._histories.clear()
         target_uuid = (
             self.current_part.uuid
             if self.current_part is not None
@@ -1695,6 +1770,8 @@ class ConnectorEditorWidget(QMainWindow):
             conflict_resolver=self._resolve_import_conflict_ui,
         )
         if imported:
+            # 덮어쓴 부품의 이력이 맞지 않게 되므로 비운다.
+            self._histories.clear()
             self.refresh_part_list(select_uuid=imported[-1].uuid)
             self.libraryUpdated.emit()
             QMessageBox.information(

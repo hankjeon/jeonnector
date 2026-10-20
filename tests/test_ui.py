@@ -434,3 +434,51 @@ def test_editor_multi_select_and_group_move(qapp: QApplication, tmp_path: Path) 
     assert canvas.selected_pins == set()
     win.mark_dirty(False)
     win.close()
+
+
+def test_editor_undo_redo_per_part(qapp: QApplication, tmp_path: Path) -> None:
+    """부품 편집기 실행 취소·다시 실행: 부품별 이력, 메뉴 공유, 부품 데이터베이스 반영 (제3.13절)."""
+    lib = PartLibrary(storage_path=tmp_path / "undo_lib.json")
+    win = MainWindow(part_library=lib)
+    win.switch_to_editor_view()
+    editor = win.editor_widget
+    editor.create_new_part()
+    part_uuid = editor.current_part.uuid
+    assert not win.undo_act.isEnabled()
+
+    editor.add_pin_at(200.0, 150.0)
+    editor.add_pin_at(240.0, 150.0)
+    editor.create_polygon_outline()
+    editor.pin_size_spin.setValue(20.0)
+    assert win.undo_act.text() == "실행 취소: 핀 모양·크기 변경"
+
+    assert win.undo()
+    assert editor.current_part.pin_size == 16.0
+    assert win.undo()  # 외곽 생성 취소
+    assert not editor.current_part.graphics
+    assert lib.get_part(part_uuid).graphics == []  # 부품 데이터베이스에도 반영
+    assert win.undo()
+    assert [p.designator for p in editor.current_part.pins] == ["1"]
+    assert win.redo_act.text() == "다시 실행: 핀 2 추가"
+    assert win.redo() and win.redo()
+    assert editor.current_part.graphics and len(editor.current_part.pins) == 2
+
+    editor.family_edit.setText("검증")
+    editor._apply_meta_edits()
+    assert win.undo_act.text() == "실행 취소: 부품 정보 변경"
+    assert win.undo()
+    assert editor.current_part.family == "사용자 정의"
+    assert editor.family_edit.text() == "사용자 정의"
+
+    # 다른 부품을 고르면 그 부품의 이력을 쓰고, 돌아오면 이전 이력이 남아 있다.
+    other = lib.list_parts()[0]
+    editor._load_part_by_uuid(other.uuid)
+    assert not win.undo_act.isEnabled()
+    editor._load_part_by_uuid(part_uuid)
+    assert win.undo_act.isEnabled()
+
+    # 메인 화면으로 돌아가면 프로젝트 이력으로 바뀐다.
+    win.switch_to_project_view()
+    assert not win.undo_act.isEnabled()
+    win.mark_dirty(False)
+    win.close()
