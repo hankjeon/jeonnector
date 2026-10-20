@@ -83,11 +83,11 @@ def test_default_parts_share_pin_proportion_and_outline_margin() -> None:
 
 def test_naming_and_pin_number_rules() -> None:
     """신호명·연결기 식별자, 신호유형 이름, 핀 번호 문자 규칙 및 대소문자 구분 검증 (제3.1, 3.6, 3.9, 3.10절)."""
-    # 신호명 규칙: 영문자 시작, 영문 대문자·숫자·_, 대소문자 정규화, 32자 이하
+    # 신호명 규칙: 숫자·부호 시작과 확장 기호 허용, 대문자 정규화, 32자 이하
     assert is_valid_signal_name("gnd")
     assert is_valid_signal_name("CLK_100M_P")
-    assert not is_valid_signal_name("12V_PWR")
-    assert not is_valid_signal_name("SIG+5V")
+    assert is_valid_signal_name("12V_PWR")
+    assert is_valid_signal_name("SIG+5V")
     assert not is_valid_signal_name("전원신호")
     assert not is_valid_signal_name("A" * 33)
 
@@ -137,11 +137,11 @@ def test_signal_row_rules_and_row_level_rename() -> None:
         ],
     )
 
-    # 1. 부품 없는 연결기에서 신호 작성 가능, 핀 번호 할당은 거부
+    # 1. 부품 없는 연결기에서도 신호와 핀 번호 작성 가능
     conn_empty = project.add_connector("J_EMPTY", None)
     assert conn_empty.add_or_update_row_signal(0, "pwr_5v")
     assert conn_empty.rows[0].signal_name == "PWR_5V"
-    assert not conn_empty.set_row_pin(0, "1", None)
+    assert conn_empty.set_row_pin(0, "1", None)
 
     # 2. 신호 생성 시 기본 신호유형과 색상은 '없음'("")이고 핀 채움색은 흰색(#ffffff)
     conn = project.add_connector("J1", custom_part)
@@ -196,10 +196,10 @@ def test_signal_row_rules_and_row_level_rename() -> None:
     conn.flip_horizontal = True
     assert display_pin_x(20.0, 120.0, True) == 100.0
 
-    # 7. 부품 교체 시 각 신호는 미할당 행 하나로 합쳐짐 (제3.11절)
+    # 7. 부품 교체 시 기존 핀 번호와 미할당 행을 유지한다.
     other_part = create_default_parts()[0]
     project.change_connector_part("J1", other_part)
-    assert all(r.pin_designator == "" for r in conn.rows)
+    assert [r.pin_designator for r in conn.rows] == ["", "2"]
     assert {r.signal_name for r in conn.rows} == {"GND", "GROUND"}
     assert len(conn.rows) == 2
 
@@ -244,7 +244,7 @@ def test_pinmap_context_assign_and_sorting_and_part_sync() -> None:
     assert impact == [("J1", "3", "SIG_NEW")]
     project.sync_part_definition(modified_part)
     assert conn.pins_for_signal("SIG_MULTI") == {"1"}
-    assert conn.pins_for_signal("SIG_NEW") == set()
+    assert conn.pins_for_signal("SIG_NEW") == {"3"}
 
 
 def test_duplicate_pins_and_jnc_schema_validation(tmp_path: Path) -> None:

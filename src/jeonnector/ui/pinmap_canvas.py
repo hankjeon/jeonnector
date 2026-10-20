@@ -890,12 +890,15 @@ class PinmapPanel(QWidget):
         if new_uuid == current_uuid:
             return
 
-        # 제3.11절: 부품 교체 전 "모든 신호 할당이 해제됩니다." 확인 창을 띄운다.
-        if current_uuid:
+        # 신호표 번호는 보존하고 같은 번호에 대응하므로 결과 검토를 안내한다.
+        if current_uuid or any(row.pin_designator for row in conn.rows):
             ans = QMessageBox.question(
                 self,
                 "연결기 부품 교체 확인",
-                "모든 신호 할당이 해제됩니다.\n연결기 부품을 교체하시겠습니까?",
+                "기존 핀 번호와 신호는 유지됩니다. 같은 번호의 부품 핀에 대응하며,\n"
+                "부품에 없는 번호는 신호표에 경고로 표시합니다.\n"
+                "번호가 같아도 물리적 역할은 다를 수 있으니 결과를 검토하세요.\n"
+                "연결기 부품을 변경하시겠습니까?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )

@@ -64,6 +64,12 @@ def color_cell_label(individual_color: str, type_color: str) -> tuple[str, str]:
 
 UNASSIGNED_TEXT = "미할당"
 NO_TYPE_TEXT = "없음"
+PART_MISMATCH_CELL_BG_COLOR = "#fed7aa"
+SIGNAL_NAME_ERROR = (
+    "신호명은 영문자·숫자·+·- 중 하나로 시작하고 영문·숫자·_ + - # / .만 "
+    "사용할 수 있습니다. 영문자나 숫자를 하나 이상 포함하고 공백 없이 32자 이하로 입력하세요."
+)
+PIN_NUMBER_ERROR = "핀 번호에는 앞뒤·중간 공백을 사용할 수 없습니다. 빈칸은 미할당입니다."
 
 
 def use_blank_placeholder(combo: QComboBox, placeholder: str) -> None:
@@ -138,7 +144,7 @@ class EditableComboDelegate(QStyledItemDelegate):
                 for pin_des in part.pin_designators():
                     combo.addItem(pin_des)
             # 새 입력 행에는 별도 콤보 박스를 사용한다.
-            if conn is None or row >= len(conn.rows) or part is None:
+            if conn is None or row >= len(conn.rows):
                 combo.setEnabled(False)
         elif col == COL_SIGNAL:
             if conn is not None:
@@ -314,7 +320,6 @@ class SignalTablePanel(QWidget):
             self.draft.pin,
         )
         use_blank_placeholder(self.draft_pin_combo, UNASSIGNED_TEXT)
-        self.draft_pin_combo.setEnabled(self.part is not None)
         self.draft_name_combo = self._make_draft_combo(
             self.connector.signal_names(), self.draft.name,
         )
@@ -443,11 +448,11 @@ class SignalTablePanel(QWidget):
             return False
         if not is_valid_signal_name(self.draft.name):
             return self._draft_error(
-                "신호명은 영문자로 시작하는 영문·숫자·밑줄 32자 이내로 입력하세요.",
+                SIGNAL_NAME_ERROR,
                 self.draft_name_combo,
             )
         if not self.connector.validate_pin_designator(self.draft.pin, self.part):
-            return self._draft_error("현재 부품에 존재하는 핀 번호를 선택하세요.", self.draft_pin_combo)
+            return self._draft_error(PIN_NUMBER_ERROR, self.draft_pin_combo)
         existing = self.connector.get_signal(self.draft.name)
         if (not existing and self.draft.signal_type
                 and not is_valid_signal_type_name(self.draft.signal_type)):
@@ -602,9 +607,12 @@ class SignalTablePanel(QWidget):
                 # 0. 핀 번호 셀
                 pin_item = QTableWidgetItem(sig_row.pin_designator)
                 pin_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if self.part is None:
-                    pin_item.setToolTip(
-                        "연결기 부품이 선택된 후 핀 번호를 할당할 수 있습니다."
+                warnings = []
+                if (sig_row.pin_designator and self.part is not None
+                        and not self.part.has_pin(sig_row.pin_designator)):
+                    pin_item.setBackground(QBrush(QColor(PART_MISMATCH_CELL_BG_COLOR)))
+                    warnings.append(
+                        f"부품 불일치: 현재 부품({self.part.name})에 핀 번호 '{sig_row.pin_designator}'이 없습니다."
                     )
                 if r_idx in dup_rows:
                     pin_item.setBackground(
@@ -614,9 +622,10 @@ class SignalTablePanel(QWidget):
                     font = pin_item.font()
                     font.setBold(True)
                     pin_item.setFont(font)
-                    pin_item.setToolTip(
+                    warnings.append(
                         f"핀 번호 '{sig_row.pin_designator}' 신호 중복"
                     )
+                pin_item.setToolTip("\n".join(warnings))
                 self.table.setItem(r_idx, COL_PIN, pin_item)
 
                 # 1. 신호명 셀
@@ -695,9 +704,7 @@ class SignalTablePanel(QWidget):
                 self.refresh_table(preserve_row=row)
                 return False
             if not is_valid_signal_name(cleaned):
-                msg = (
-                    "신호명은 영문자로 시작하고 영문 대문자·숫자·언더스코어(_)만 사용할 수 있습니다(공백·특수문자 불가, 32자 이하)."
-                )
+                msg = SIGNAL_NAME_ERROR
                 self.statusMessage.emit(msg)
                 QMessageBox.warning(self, "유효하지 않은 신호명", msg)
                 self.refresh_table(preserve_row=row)
@@ -716,12 +723,7 @@ class SignalTablePanel(QWidget):
         if col == COL_PIN:
             raw_pin = "" if text == "미할당" else text
             if not self.connector.validate_pin_designator(raw_pin, self.part):
-                if self.part is None:
-                    msg = "연결기 부품이 선택되지 않아 핀 번호를 입력할 수 없습니다."
-                else:
-                    msg = (
-                        f"현재 부품({self.part.name})에 존재하지 않거나 형식이 잘못된 핀 번호입니다: '{text}'"
-                    )
+                msg = PIN_NUMBER_ERROR
                 self.statusMessage.emit(msg)
                 QMessageBox.warning(self, "유효하지 않은 핀 번호", msg)
                 self.refresh_table(preserve_row=row)
@@ -802,8 +804,9 @@ class SignalTablePanel(QWidget):
             self.pinSelectionChanged.emit("")
             return
         sig_row = self.connector.rows[row]
-        # 제3.8절: 미할당 행을 선택하면 핀맵에는 강조 표시를 하지 않는다.
-        if not sig_row.pin_designator:
+        # 실제 부품 핀에 대응하지 않는 행은 이전 핀맵 강조를 해제한다.
+        if (not sig_row.pin_designator or self.part is None
+                or not self.part.has_pin(sig_row.pin_designator)):
             self.pinSelectionChanged.emit("")
         else:
             self.pinSelectionChanged.emit(sig_row.pin_designator)

@@ -29,7 +29,8 @@ DUPLICATE_CELL_BG_COLOR = "#fecaca"
 DUPLICATE_PIN_LABEL = "신호 중복"
 EMPTY_PART_MESSAGE = "연결기 부품이 선택되지 않았습니다"
 
-_SIGNAL_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
+_SIGNAL_NAME_RE = re.compile(r"[A-Z0-9+\-][A-Z0-9_+#/.\-]{0,31}")
+_CONNECTOR_ID_RE = re.compile(r"[A-Z][A-Z0-9_]{0,31}")
 _SIGNAL_TYPE_NAME_RE = re.compile(r"^[A-Z가-힣][A-Z가-힣0-9_]{0,31}$")
 
 
@@ -40,7 +41,7 @@ class ProjectFormatError(ValueError):
 def natural_sort_key(text: str) -> list[int | str]:
     """핀 번호·식별자 등의 자연 정렬 키 생성 (대소문자는 ASCII 순서: A2 < A10, A < a)."""
     parts = re.split(r"(\d+)", text)
-    return [int(p) if p.isdigit() else p for p in parts]
+    return [int(part) if index % 2 else part for index, part in enumerate(parts)]
 
 
 def normalize_signal_name(raw_name: str) -> str:
@@ -49,16 +50,17 @@ def normalize_signal_name(raw_name: str) -> str:
 
 
 def is_valid_signal_name(raw_name: str) -> bool:
-    """신호명 및 연결기 식별자 유효성 검사 (제3.1절, 제3.6절).
-
-    - 영문 대문자, 숫자, 언더스코어(_)만 사용하며 영문자로 시작
-    - 대소문자 구분 없음(대문자로 변환 후 검증)
-    - 빈 이름 불가, 32자 이하
-    """
+    """확장 신호명 검사: 영문·숫자·_+-#/. 허용, 영문·숫자·부호 시작, 최대 32자."""
     normalized = normalize_signal_name(raw_name)
-    if not normalized:
-        return False
-    return bool(_SIGNAL_NAME_RE.match(normalized))
+    return bool(
+        _SIGNAL_NAME_RE.fullmatch(normalized)
+        and re.search(r"[A-Z0-9]", normalized)
+    )
+
+
+def is_valid_connector_id(raw_name: str) -> bool:
+    """연결기 식별자는 영문자로 시작하고 영문·숫자·밑줄만 최대 32자 허용한다."""
+    return bool(_CONNECTOR_ID_RE.fullmatch(normalize_signal_name(raw_name)))
 
 
 def normalize_signal_type_name(raw_name: str) -> str:
@@ -435,7 +437,7 @@ class ConnectorInstance:
     ) -> bool:
         """신호표의 특정 행(또는 마지막 빈 행)의 신호명을 설정하거나 변경한다 (제3.6절).
 
-        - 신호명 규칙(영문자 시작, 영문 대문자·숫자·언더스코어, 32자 이하)을 검증하고 대문자로 정규화한다.
+        - 확장 신호명 규칙을 검증하고 대문자로 정규화한다.
         - 한 행의 신호명을 바꾸면 그 행만 다른 신호가 된다 (다른 행은 기존 신호로 유지).
         - 바꾼 이름의 신호가 이미 있으면 그 행은 해당 신호의 속성을 따른다.
         - 기존 행을 처음 쓰는 이름으로 바꾸면 이전 신호의 신호유형·색상을 복사한 새 신호가 생성된다.
@@ -576,15 +578,11 @@ class ConnectorInstance:
         """핀 번호 유효성 검사 (제3.9절).
 
         빈 문자열("") 또는 '미할당'은 할당 해제로 허용한다.
-        연결기 부품에 존재하는 핀 번호(대소문자 구분, 공백 불가)만 허용한다.
+        부품 존재 여부와 무관하게 번호 형식(대소문자 구분, 공백 불가)만 검사한다.
         """
         if pin_designator in ("", "미할당"):
             return True
-        if not is_valid_pin_number_format(pin_designator):
-            return False
-        if part is None:
-            return False
-        return part.has_pin(pin_designator)
+        return is_valid_pin_number_format(pin_designator)
 
     def set_row_pin(
         self,
@@ -638,7 +636,7 @@ class ConnectorInstance:
         """
         if not is_valid_pin_number_format(pin_designator):
             return False
-        if not self.validate_pin_designator(pin_designator, part):
+        if part is None or not part.has_pin(pin_designator):
             return False
 
         # 할당 해제
@@ -671,34 +669,19 @@ class ConnectorInstance:
         return True
 
     def replace_part(self, new_part_uuid: str | None) -> None:
-        """연결기 부품 교체 (제3.11절).
-
-        연결기 식별자와 신호(신호명, 신호유형, 색상)는 유지하고 할당은 모두 해제한다.
-        각 신호는 미할당 행 하나로 합쳐진다.
-        """
+        """신호표의 핀 번호와 행을 보존한 채 부품만 선택·교체·해제한다."""
         self.part_uuid = new_part_uuid
-        for row in self.rows:
-            row.pin_designator = ""
-        self.enforce_row_rules()
 
     def apply_same_uuid_part_update(
         self, updated_part: ConnectorPart
     ) -> list[tuple[str, str]]:
-        """같은 UUID 부품의 정의 변경 반영 (제3.3절).
-
-        핀 위치 변경·핀 추가는 기존 할당을 유지하고,
-        삭제된 핀에 할당되었던 신호만 할당을 해제(제3.6절 행 규칙 적용)한다.
-        반환값: 할당이 해제된 (pin_designator, signal_name) 목록.
-        """
+        """번호·신호를 보존하며 변경된 부품과 불일치하는 (핀 번호, 신호명)을 반환한다."""
         valid_pins = {p.designator for p in updated_part.pins}
-        unassigned_list: list[tuple[str, str]] = []
-        for row in self.rows:
-            if row.pin_designator and row.pin_designator not in valid_pins:
-                unassigned_list.append((row.pin_designator, row.signal_name))
-                row.pin_designator = ""
-        if unassigned_list:
-            self.enforce_row_rules()
-        return unassigned_list
+        return [
+            (row.pin_designator, row.signal_name)
+            for row in self.rows
+            if row.pin_designator and row.pin_designator not in valid_pins
+        ]
 
     def sort_rows(
         self,
@@ -947,7 +930,7 @@ class Project:
         designator: str,
         part: ConnectorPart | None = None,
     ) -> ConnectorInstance:
-        if not is_valid_signal_name(designator):
+        if not is_valid_connector_id(designator):
             raise ValueError(
                 "연결기 식별자는 영문자로 시작하고 영문 대문자·숫자·언더스코어(_)만 사용할 수 있습니다(32자 이하)."
             )
@@ -968,7 +951,7 @@ class Project:
     def rename_connector(self, old_designator: str, new_designator: str) -> bool:
         """연결기 식별자 변경 (제3.1절: 문자 규칙 검증 및 자연 정렬 유지)."""
         conn = self.get_connector(old_designator)
-        if conn is None or not is_valid_signal_name(new_designator):
+        if conn is None or not is_valid_connector_id(new_designator):
             return False
         cleaned_new = normalize_signal_name(new_designator)
         existing = self.get_connector(cleaned_new)
@@ -991,7 +974,7 @@ class Project:
         designator: str,
         new_part: ConnectorPart | None,
     ) -> bool:
-        """연결기의 부품을 교체하고 기존 핀 할당을 모두 해제한다 (제3.11절)."""
+        """신호표의 핀 번호를 유지하며 연결기의 부품을 교체한다."""
         conn = self.get_connector(designator)
         if conn is None:
             return False
@@ -1005,7 +988,7 @@ class Project:
     def preview_part_sync_impact(
         self, updated_part: ConnectorPart
     ) -> list[tuple[str, str, str]]:
-        """같은 UUID 부품의 변경으로 인해 할당 해제될 (연결기 식별자, 핀 번호, 신호명) 목록을 계산한다 (제3.3절)."""
+        """변경된 부품과 불일치할 (연결기 식별자, 핀 번호, 신호명)을 계산한다."""
         valid_pins = {p.designator for p in updated_part.pins}
         impacted: list[tuple[str, str, str]] = []
         for conn in self.connectors:
@@ -1026,8 +1009,8 @@ class Project:
         impacted: list[tuple[str, str, str]] = []
         for conn in self.connectors:
             if conn.part_uuid == updated_part.uuid:
-                unassigned = conn.apply_same_uuid_part_update(updated_part)
-                for pin_des, sig_name in unassigned:
+                mismatched = conn.apply_same_uuid_part_update(updated_part)
+                for pin_des, sig_name in mismatched:
                     impacted.append((conn.designator, pin_des, sig_name))
         return impacted
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QByteArray, QSettings, Qt
+from PySide6.QtCore import QByteArray, QIODevice, QSaveFile, QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QKeySequence, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
@@ -37,11 +37,13 @@ from jeonnector.model import (
     ConnectorPart,
     Project,
     ProjectFormatError,
-    is_valid_signal_name,
+    is_valid_connector_id,
+    natural_sort_key,
     normalize_signal_name,
 )
 from jeonnector.storage import PartLibrary, load_project, save_project
 from jeonnector.ui.connector_editor import ConnectorEditorWidget
+from jeonnector.ui.markdown_dialog import MarkdownImportDialog
 from jeonnector.ui.pinmap_canvas import PinmapPanel
 from jeonnector.ui.signal_table import SignalTablePanel
 from jeonnector.ui.signal_type_dialog import SignalTypeDialog
@@ -111,7 +113,7 @@ class AddConnectorDialog(QDialog):
 
     def _on_accept(self) -> None:
         raw = self.designator_edit.text().strip()
-        if not is_valid_signal_name(raw):
+        if not is_valid_connector_id(raw):
             QMessageBox.warning(
                 self,
                 "식별자 규칙 오류",
@@ -209,6 +211,26 @@ class MainWindow(QMainWindow):
         self.save_as_act.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.save_as_act.triggered.connect(self.save_project_as_dialog)
         file_menu.addAction(self.save_as_act)
+
+        file_menu.addSeparator()
+        import_menu = file_menu.addMenu("가져오기").addMenu("마크다운")
+        self.import_markdown_file_act = import_menu.addAction(
+            "파일 가져오기…", lambda: self.import_markdown_dialog(folder=False)
+        )
+        self.import_markdown_folder_act = import_menu.addAction(
+            "폴더 가져오기…", lambda: self.import_markdown_dialog(folder=True)
+        )
+        export_menu = file_menu.addMenu("내보내기").addMenu("마크다운")
+        self.export_markdown_selected_act = export_menu.addAction(
+            "선택 연결기 내보내기…", lambda: self.export_markdown_dialog(all_connectors=False)
+        )
+        self.export_markdown_all_act = export_menu.addAction(
+            "전체 연결기 내보내기…", lambda: self.export_markdown_dialog(all_connectors=True)
+        )
+        export_menu.addSeparator()
+        self.export_markdown_template_act = export_menu.addAction(
+            "템플릿 만들기…", lambda: self.export_markdown_dialog(template=True)
+        )
 
         file_menu.addSeparator()
         exit_act = QAction("종료(&X)", self)
@@ -548,6 +570,8 @@ class MainWindow(QMainWindow):
 
     def update_status_bar(self) -> None:
         """상태바에 프로젝트 전체의 신호 중복 경고 수(중복 핀 1개 = 경고 1건)를 표시한다 (제3.12절)."""
+        self.export_markdown_selected_act.setEnabled(self.current_connector is not None)
+        self.export_markdown_all_act.setEnabled(bool(self.project.connectors))
         dup_pin_warnings = self.project.total_duplicate_pin_warnings()
         unassigned_rows = self.project.total_unassigned_signal_rows()
         conn_count = len(self.project.connectors)
@@ -606,7 +630,7 @@ class MainWindow(QMainWindow):
         """편집기에서 변경한 부품을 부품 데이터베이스에 저장하고 현재 열린 프로젝트에 자동 반영한다 (제3.3절).
 
         - 핀 이동·추가 등 할당이 유지되는 변경은 상태바에 알린다.
-        - 핀이 삭제되어 할당이 해제되는 경우에는 영향받는 연결기와 신호를 확인 창으로 보여준다.
+        - 핀이 삭제되어 부품 불일치가 생기는 경우에는 영향받는 연결기와 신호를 확인 창으로 보여준다.
           취소하면 저장·반영·전환(또는 종료)을 하지 않고 편집기에 남는다.
         """
         if self.editor_widget.current_part is not None:
@@ -639,8 +663,8 @@ class MainWindow(QMainWindow):
                     ]
                     ans = QMessageBox.question(
                         self,
-                        "부품 핀 삭제에 따른 할당 해제 확인",
-                        "부품에서 삭제된 핀에 할당된 다음 신호의 할당이 해제됩니다:\n\n"
+                        "부품 핀 변경에 따른 불일치 확인",
+                        "다음 신호의 핀 번호는 유지되지만 변경된 부품에 해당 핀이 없어 경고로 표시됩니다:\n\n"
                         + "\n".join(lines[:15])
                         + "\n\n저장하고 프로젝트에 반영하시겠습니까?",
                         QMessageBox.StandardButton.Yes
@@ -793,6 +817,7 @@ class MainWindow(QMainWindow):
         self.signal_table_panel.set_context(
             self.project, conn, part, keep_state=keep_table_state
         )
+        self.export_markdown_selected_act.setEnabled(conn is not None)
 
     def add_connector(
         self,
@@ -834,7 +859,7 @@ class MainWindow(QMainWindow):
         )
         if not ok or not raw.strip():
             return
-        if not is_valid_signal_name(raw):
+        if not is_valid_connector_id(raw):
             QMessageBox.warning(
                 self,
                 "식별자 규칙 오류",
@@ -934,6 +959,10 @@ class MainWindow(QMainWindow):
             self._refresh_sidebar(select_designator=conn.designator)
 
     def _on_signal_table_pin_selected(self, pin_designator: str) -> None:
+        conn = self.current_connector
+        part = self.project.get_part_for_connector(conn) if conn else None
+        if part is None or not part.has_pin(pin_designator):
+            pin_designator = ""
         self.pinmap_panel.canvas.select_pin(
             pin_designator, emit_signal=False
         )
@@ -948,6 +977,139 @@ class MainWindow(QMainWindow):
         self._update_undo_actions()
         self._refresh_sidebar()
         self._refresh_current_connector_views(reset_canvas_view=True)
+
+    def _prepare_signal_exchange(self) -> bool:
+        """편집기 변경과 입력 중인 신호를 먼저 확정하거나 사용자가 취소하게 한다."""
+        if self.stack.currentIndex() == 1 and not self.switch_to_project_view():
+            return False
+        return self._resolve_signal_draft()
+
+    def import_markdown_dialog(self, folder: bool = False) -> None:
+        if folder:
+            selected = QFileDialog.getExistingDirectory(self, "마크다운 폴더 가져오기")
+            if not selected:
+                return
+            try:
+                paths = sorted(
+                    (p for p in Path(selected).iterdir()
+                     if p.is_file() and p.suffix.lower() == ".md"),
+                    key=lambda p: natural_sort_key(p.name),
+                )
+            except OSError as exc:
+                QMessageBox.critical(self, "폴더 읽기 오류", str(exc))
+                return
+        else:
+            selected, _ = QFileDialog.getOpenFileName(
+                self, "마크다운 파일 가져오기", "", "마크다운 (*.md *.MD)"
+            )
+            if not selected:
+                return
+            paths = [Path(selected)]
+        if not paths:
+            QMessageBox.information(self, "마크다운 가져오기", "가져올 마크다운 파일이 없습니다.")
+            return
+        self.import_markdown_paths(paths)
+
+    def import_markdown_paths(self, paths: list[Path]) -> bool:
+        from jeonnector.markdown_exchange import prepare_markdown_import, apply_markdown_import
+
+        if not self._prepare_signal_exchange():
+            return False
+        items = prepare_markdown_import(paths, self.project)
+        dialog = MarkdownImportDialog(items, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        selected = dialog.selected_items()
+        if not selected:
+            return False
+        try:
+            added = apply_markdown_import(self.project, selected)
+        except ValueError as exc:
+            QMessageBox.warning(self, "가져오기 오류", str(exc))
+            return False
+        if not added:
+            return False
+        self._record_edit(f"마크다운 연결기 {len(added)}개 가져오기", focus=added[0])
+        self._refresh_sidebar(select_designator=added[0])
+        self.statusBar().showMessage(f"연결기 {len(added)}개를 가져왔습니다.", 5000)
+        return True
+
+    def export_markdown_dialog(
+        self, all_connectors: bool = False, template: bool = False
+    ) -> None:
+        from jeonnector.markdown_exchange import MARKDOWN_TEMPLATE, export_connector
+
+        if not template and not self._prepare_signal_exchange():
+            return
+        if all_connectors:
+            if not self.project.connectors:
+                return
+            folder = QFileDialog.getExistingDirectory(self, "전체 연결기 마크다운 내보내기")
+            if not folder:
+                return
+            outputs = [(Path(folder) / f"{conn.designator}.md", export_connector(conn))
+                       for conn in self.project.sorted_connectors()]
+        else:
+            conn = self.current_connector
+            if template:
+                default = "신호표_템플릿.md"
+                content = MARKDOWN_TEMPLATE
+            elif conn is not None:
+                default = f"{conn.designator}.md"
+                content = export_connector(conn)
+            else:
+                return
+            title = "마크다운 템플릿 만들기" if template else "선택 연결기 마크다운 내보내기"
+            name, _ = QFileDialog.getSaveFileName(
+                self, title, default, "마크다운 (*.md)",
+                options=QFileDialog.Option.DontConfirmOverwrite,
+            )
+            if not name:
+                return
+            path = Path(name)
+            if path.suffix.lower() != ".md":
+                path = path.with_suffix(".md")
+            outputs = [(path, content)]
+        existing = [path for path, _ in outputs if path.exists()]
+        if existing:
+            answer = QMessageBox.question(
+                self, "덮어쓰기 확인",
+                "다음 파일을 덮어쓰시겠습니까?\n" + "\n".join(str(p) for p in existing),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        failures = []
+        written = 0
+        for path, text in outputs:
+            try:
+                self._write_markdown_file(path, text)
+                written += 1
+            except OSError as exc:
+                failures.append(f"{path}: {exc}")
+        if failures:
+            QMessageBox.warning(
+                self, "마크다운 내보내기 결과",
+                f"성공 {written}개 / 실패 {len(failures)}개\n" + "\n".join(failures),
+            )
+        self.statusBar().showMessage(
+            f"마크다운 저장: 성공 {written}개 / 실패 {len(failures)}개", 5000
+        )
+
+    @staticmethod
+    def _write_markdown_file(path: Path, text: str) -> None:
+        """완전히 기록한 경우에만 교체하여 실패 시 기존 문서를 보존한다."""
+        target = QSaveFile(str(path))
+        target.setDirectWriteFallback(False)
+        if not target.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise OSError(target.errorString())
+        payload = text.encode("utf-8")
+        if target.write(payload) != len(payload):
+            target.cancelWriting()
+            raise OSError("파일을 완전히 기록하지 못했습니다.")
+        if not target.commit():
+            raise OSError(target.errorString())
 
     def open_project_dialog(self) -> None:
         if not self._confirm_discard_or_save():

@@ -87,11 +87,11 @@ def test_draft_controls_and_atomic_commit(window, qtbot):
 
 def test_draft_validation_reset_and_existing_properties(window, qtbot):
     panel = window.signal_table_panel
-    panel.draft_pin_combo.setEditText("99999")
+    panel.draft_pin_combo.setEditText("99 999")
     panel.draft_name_combo.setEditText("NEW")
     panel.draft_type_combo.setEditText("새유형")
     assert not panel.commit_draft()
-    assert panel.draft.pin == "99999"
+    assert panel.draft.pin == "99 999"
     assert not window.current_connector.rows
     assert "새유형" not in window.project.signal_types
     qtbot.mouseClick(panel.reset_button, Qt.MouseButton.LeftButton)
@@ -125,7 +125,7 @@ def test_pin_only_or_invalid_type_keeps_draft(window):
 def test_no_part_allows_unassigned_signal(window):
     window.add_connector("J2")
     panel = window.signal_table_panel
-    assert not panel.draft_pin_combo.isEnabled()
+    assert panel.draft_pin_combo.isEnabled()
     panel.draft_name_combo.setEditText("UNASSIGNED")
     assert panel.commit_draft()
     assert rows(window) == [("UNASSIGNED", "")]
