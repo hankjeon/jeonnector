@@ -82,6 +82,7 @@ from jeonnector.part_geometry import (
     snap_part_to_grid,
 )
 from jeonnector.storage import PartLibrary, export_parts, read_parts_file
+from jeonnector.ui.pinmap_canvas import ElidedLabel
 
 MODE_SELECT = "SELECT"
 MODE_ADD_PIN = "ADD_PIN"
@@ -1048,14 +1049,12 @@ class ConnectorEditorWidget(QMainWindow):
         center_layout.setSpacing(4)
 
         top_info = QHBoxLayout()
-        self.mode_hint_label = QLabel(
-            SELECT_MODE_HINT
-        )
+        # 긴 안내 문구가 창 최소 너비를 늘리지 않도록 줄임표·툴팁으로 표시한다.
+        self.mode_hint_label = ElidedLabel(SELECT_MODE_HINT)
         self.mode_hint_label.setStyleSheet("color: #334155; font-size: 11px;")
         self.coord_status_label = QLabel("커서 좌표: (0.0, 0.0)")
         self.coord_status_label.setStyleSheet("color: #475569; font-size: 11px;")
-        top_info.addWidget(self.mode_hint_label)
-        top_info.addStretch(1)
+        top_info.addWidget(self.mode_hint_label, 1)
         top_info.addWidget(self.coord_status_label)
         center_layout.addLayout(top_info)
 

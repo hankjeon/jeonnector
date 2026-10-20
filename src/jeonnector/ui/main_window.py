@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QStatusBar,
     QToolBar,
@@ -355,6 +356,7 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(self.project_workspace)
         self.stack.addWidget(self.editor_widget)
+        self._show_screen(0)
 
         # 핀맵 ↔ 신호표 양방향 연동 시그널 연결
         self.pinmap_panel.partChangeRequested.connect(
@@ -567,6 +569,19 @@ class MainWindow(QMainWindow):
             f"연결기 {conn_count}개 · 미할당 신호 행 {unassigned_rows}개"
         )
 
+    def _show_screen(self, index: int) -> None:
+        """화면을 전환하고, 창 최소 크기는 보이는 화면 기준으로만 정한다 (제4.1절).
+
+        쌓인 화면은 숨은 화면의 최소 크기까지 반영하므로 숨은 화면의 크기 정책을 무시로 둔다.
+        """
+        for i in range(self.stack.count()):
+            policy = (
+                QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            )
+            self.stack.widget(i).setSizePolicy(policy, policy)
+        self.stack.setCurrentIndex(index)
+        self.stack.updateGeometry()
+
     def _toggle_screen_mode(self) -> None:
         if self.stack.currentIndex() == 0:
             self.switch_to_editor_view()
@@ -581,7 +596,7 @@ class MainWindow(QMainWindow):
             p_uuid: part.clone() for p_uuid, part in self.project.parts.items()
         }
         self.editor_widget.refresh_part_list()
-        self.stack.setCurrentIndex(1)
+        self._show_screen(1)
         self.switch_editor_btn.setText("← 메인 화면으로 돌아가기")
         self._update_undo_actions()
 
@@ -662,7 +677,7 @@ class MainWindow(QMainWindow):
             ):
                 return False
 
-        self.stack.setCurrentIndex(0)
+        self._show_screen(0)
         self.switch_editor_btn.setText("연결기 부품 편집기 열기")
         self._update_undo_actions()
         self._refresh_available_parts()

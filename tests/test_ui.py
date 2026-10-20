@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
+    QSizePolicy,
 )
 
 from jeonnector.default_parts import create_default_parts
@@ -511,5 +512,29 @@ def test_signal_label_size_caps_and_reveals_more_text_on_zoom(qapp: QApplication
     assert near.endswith("…") and mid.endswith("…")
     assert len(near) < len(mid)
     assert far == long_name
+    win.mark_dirty(False)
+    win.close()
+
+
+def test_window_minimum_size_follows_visible_screen(qapp: QApplication, tmp_path: Path) -> None:
+    """창 최소 크기는 보이는 화면 기준이며 숨은 편집기 화면과 긴 안내 문구가 늘리지 않는다 (제4.1절)."""
+    win = MainWindow(part_library=PartLibrary(storage_path=tmp_path / "min_lib.json"))
+    win.show()
+    qapp.processEvents()
+    project_min = win.minimumSizeHint().width()
+    assert project_min < 700
+    hint = win.editor_widget.mode_hint_label
+    assert hint.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Ignored
+    assert win.editor_widget.mode_hint_label.toolTip() == win.editor_widget.mode_hint_label._full_text
+    win.resize(300, 200)
+    win.switch_to_editor_view()
+    qapp.processEvents()
+    editor_min = win.minimumSizeHint().width()
+    assert project_min < editor_min < 1000
+    assert win.width() >= editor_min  # 편집기로 전환하면 편집기 최소 크기까지 커진다.
+    win.switch_to_project_view()
+    win.resize(300, 200)
+    qapp.processEvents()
+    assert win.width() == project_min
     win.mark_dirty(False)
     win.close()
