@@ -1,16 +1,18 @@
-"""전연결기(jeonnector) 명령 객체(Command) 기반 편집 계층 (제5.1절).
+"""전연결기(jeonnector) 명령 객체(Command) 기반 편집 계층과 실행 취소·다시 실행 (제5.1절, 제3.13절).
 
-모든 프로젝트·연결기·신호·신호유형 편집을 명령 객체를 통해 실행하고
-추후 실행 취소·다시 실행(Undo/Redo)을 도입할 수 있도록 상태 스냅샷 및 이력을 관리한다.
+프로젝트 편집이 끝날 때마다 상태 스냅샷을 기록하고, 실행 취소·다시 실행은 기록한 스냅샷으로
+프로젝트를 되돌린다. 편집 종류마다 되돌리는 코드를 따로 두지 않는다.
 """
 
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Callable
 
-from jeonnector.model import ConnectorPart, Project
+from jeonnector.model import ConnectorPart, Project, normalize_signal_name
+
+HISTORY_LIMIT = 100
 
 
 @dataclass
@@ -24,33 +26,133 @@ class EditCommand:
         return bool(self.action())
 
 
-class CommandDispatcher:
-    """편집 명령을 실행하고 실행 전후 프로젝트 스냅샷 이력을 보관하는 편집 계층."""
+@dataclass
+class HistoryStep:
+    """실행 취소 한 단계: 편집 설명, 편집 전 상태, 편집 전후에 보여 줄 연결기."""
 
-    def __init__(self, project_getter: Callable[[], Project]) -> None:
+    description: str
+    state: dict[str, Any]
+    focus_before: str | None
+    focus_after: str | None
+
+
+def project_state(project: Project) -> dict[str, Any]:
+    """비교·복원용 프로젝트 상태. 저장 시 바뀌는 이름과 표 정렬에 따른 행 순서는 제외한다."""
+    state = copy.deepcopy(project.to_dict())
+    state.pop("name", None)
+    for conn in state["connectors"]:
+        conn["rows"].sort(key=lambda row: row["row_id"])
+    return state
+
+
+class CommandDispatcher:
+    """편집 명령을 실행하고 편집 이력으로 실행 취소·다시 실행을 제공하는 편집 계층."""
+
+    def __init__(
+        self, project_getter: Callable[[], Project], limit: int = HISTORY_LIMIT
+    ) -> None:
         self._project_getter = project_getter
-        self._history: list[tuple[str, dict[str, Any]]] = []
-        self._redo_stack: list[tuple[str, dict[str, Any]]] = []
+        self._limit = limit
+        self._undo: list[HistoryStep] = []
+        self._redo: list[HistoryStep] = []
+        self._current = project_state(project_getter())
+        self._saved: dict[str, Any] | None = self._current
 
     @property
     def history_count(self) -> int:
-        return len(self._history)
+        return len(self._undo)
 
-    def clear(self) -> None:
-        self._history.clear()
-        self._redo_stack.clear()
+    def reset(self, saved: bool = True) -> None:
+        """새로 만들기·열기 후 현재 프로젝트를 기준 상태로 삼고 이력을 비운다."""
+        self._undo.clear()
+        self._redo.clear()
+        self._current = project_state(self._project_getter())
+        self._saved = self._current if saved else None
+
+    clear = reset
+
+    def mark_saved(self) -> None:
+        self._saved = self._current
+
+    def is_at_saved_state(self) -> bool:
+        return self._saved is not None and self._current == self._saved
+
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def undo_description(self) -> str:
+        return self._undo[-1].description if self._undo else ""
+
+    def redo_description(self) -> str:
+        return self._redo[-1].description if self._redo else ""
+
+    def record(
+        self,
+        description: str,
+        focus: str | None = None,
+        undo_focus: str | None = None,
+    ) -> bool:
+        """편집을 마친 뒤 호출한다. 상태가 바뀌었으면 이전 상태를 한 단계로 기록한다."""
+        state = project_state(self._project_getter())
+        if state == self._current:
+            return False
+        self._undo.append(
+            HistoryStep(
+                description,
+                self._current,
+                undo_focus if undo_focus is not None else focus,
+                focus,
+            )
+        )
+        del self._undo[: -self._limit]
+        self._redo.clear()
+        self._current = state
+        return True
+
+    def undo(self) -> HistoryStep | None:
+        """한 단계 되돌리고 그 단계를 반환한다. 되돌린 뒤에는 focus_before를 보여 준다."""
+        if not self._undo:
+            return None
+        step = self._undo.pop()
+        self._redo.append(
+            HistoryStep(step.description, self._current, step.focus_before, step.focus_after)
+        )
+        self._restore(step.state)
+        return step
+
+    def redo(self) -> HistoryStep | None:
+        """되돌린 단계를 다시 실행하고 그 단계를 반환한다. 다시 실행한 뒤에는 focus_after를 보여 준다."""
+        if not self._redo:
+            return None
+        step = self._redo.pop()
+        self._undo.append(
+            HistoryStep(step.description, self._current, step.focus_before, step.focus_after)
+        )
+        self._restore(step.state)
+        return step
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        # 화면이 참조하는 프로젝트 객체는 그대로 두고 내용만 바꾼다. 이름은 유지한다.
+        project = self._project_getter()
+        restored = Project.from_dict({**copy.deepcopy(state), "name": project.name})
+        for f in fields(Project):
+            setattr(project, f.name, getattr(restored, f.name))
+        self._current = state
 
     def execute(
-        self, description: str, action: Callable[[], bool]
+        self,
+        description: str,
+        action: Callable[[], bool],
+        focus: str | None = None,
+        undo_focus: str | None = None,
     ) -> bool:
-        """명령 객체를 생성해 실행하고 성공 시 변경 전 스냅샷을 이력에 기록한다."""
-        project = self._project_getter()
-        before_snapshot = copy.deepcopy(project.to_dict())
-        cmd = EditCommand(description=description, action=action)
-        ok = cmd.execute()
+        """명령 객체를 생성해 실행하고 성공하면 편집 이력에 기록한다."""
+        ok = EditCommand(description=description, action=action).execute()
         if ok:
-            self._history.append((description, before_snapshot))
-            self._redo_stack.clear()
+            self.record(description, focus, undo_focus)
         return ok
 
     def add_connector(
@@ -62,13 +164,16 @@ class CommandDispatcher:
             project.add_connector(designator, part)
             return True
 
-        return self.execute(f"연결기 추가: {designator}", _do)
+        return self.execute(
+            f"연결기 추가: {designator}", _do, focus=normalize_signal_name(designator)
+        )
 
     def remove_connector(self, designator: str) -> bool:
         project = self._project_getter()
         return self.execute(
             f"연결기 제거: {designator}",
             lambda: project.remove_connector(designator),
+            undo_focus=designator,
         )
 
     def rename_connector(
@@ -78,6 +183,8 @@ class CommandDispatcher:
         return self.execute(
             f"연결기 식별자 변경: {old_designator} -> {new_designator}",
             lambda: project.rename_connector(old_designator, new_designator),
+            focus=new_designator,
+            undo_focus=old_designator,
         )
 
     def change_connector_part(
@@ -87,4 +194,5 @@ class CommandDispatcher:
         return self.execute(
             f"연결기 부품 변경: {designator}",
             lambda: project.change_connector_part(designator, new_part),
+            focus=designator,
         )

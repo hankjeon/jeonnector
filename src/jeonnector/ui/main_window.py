@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self._refresh_available_parts()
         self._refresh_sidebar()
         self.update_status_bar()
+        self._update_undo_actions()
 
     @property
     def current_connector(self) -> ConnectorInstance | None:
@@ -214,6 +215,19 @@ class MainWindow(QMainWindow):
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
 
+        # 제3.13절: 프로젝트 편집의 실행 취소·다시 실행 (부품 편집기는 제외)
+        edit_menu = menubar.addMenu("편집(&E)")
+        self.undo_act = QAction("실행 취소(&U)", self)
+        self.undo_act.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_act.triggered.connect(self.undo)
+        edit_menu.addAction(self.undo_act)
+        self.redo_act = QAction("다시 실행(&R)", self)
+        self.redo_act.setShortcuts(
+            [QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")]
+        )
+        self.redo_act.triggered.connect(self.redo)
+        edit_menu.addAction(self.redo_act)
+
         project_menu = menubar.addMenu("프로젝트(&P)")
         self.signal_type_act = QAction("신호유형 관리(&T)...", self)
         self.signal_type_act.triggered.connect(self.open_signal_type_dialog)
@@ -243,6 +257,9 @@ class MainWindow(QMainWindow):
         self.main_toolbar.addAction(self.new_proj_act)
         self.main_toolbar.addAction(self.open_proj_act)
         self.main_toolbar.addAction(self.save_proj_act)
+        self.main_toolbar.addSeparator()
+        self.main_toolbar.addAction(self.undo_act)
+        self.main_toolbar.addAction(self.redo_act)
         self.main_toolbar.addSeparator()
         self.main_toolbar.addAction(self.signal_type_act)
         self.main_toolbar.addSeparator()
@@ -456,6 +473,57 @@ class MainWindow(QMainWindow):
             return
         self.load_project_from_path(target, prompt_library_sync=True)
 
+    def _record_edit(
+        self,
+        description: str,
+        focus: str | None = None,
+        undo_focus: str | None = None,
+    ) -> None:
+        """프로젝트 편집을 마친 뒤 실행 취소 이력에 기록하고 저장 안 됨 표시를 갱신한다."""
+        if focus is None and self.current_connector is not None:
+            focus = self.current_connector.designator
+        self.commands.record(description, focus, undo_focus)
+        self.mark_dirty(not self.commands.is_at_saved_state())
+        self._update_undo_actions()
+
+    def _update_undo_actions(self) -> None:
+        in_project_view = self.stack.currentIndex() == 0
+        for act, label, available, text in (
+            (self.undo_act, "실행 취소", self.commands.can_undo(), self.commands.undo_description()),
+            (self.redo_act, "다시 실행", self.commands.can_redo(), self.commands.redo_description()),
+        ):
+            act.setEnabled(in_project_view and available)
+            act.setText(f"{label}: {text}" if available else label)
+
+    def undo(self) -> bool:
+        return self._step_history(redo=False)
+
+    def redo(self) -> bool:
+        return self._step_history(redo=True)
+
+    def _step_history(self, redo: bool) -> bool:
+        """실행 취소·다시 실행 후 그 편집의 연결기를 선택해 보여 준다 (제3.13절)."""
+        if self.stack.currentIndex() != 0:
+            return False
+        if not (self.commands.can_redo() if redo else self.commands.can_undo()):
+            return False
+        if not self._resolve_signal_draft():
+            return False
+        step = self.commands.redo() if redo else self.commands.undo()
+        if step is None:
+            return False
+        focus = step.focus_after if redo else step.focus_before
+        if focus is None or self.project.get_connector(focus) is None:
+            current = self.connector_list.currentItem()
+            focus = str(current.data(Qt.ItemDataRole.UserRole)) if current else None
+        self._refresh_available_parts()
+        self._refresh_sidebar(select_designator=focus, keep_table_state=True)
+        self.mark_dirty(not self.commands.is_at_saved_state())
+        self._update_undo_actions()
+        label = "다시 실행" if redo else "실행 취소"
+        self.statusBar().showMessage(f"{label}: {step.description}", 4000)
+        return True
+
     def mark_dirty(self, dirty: bool = True) -> None:
         self.is_dirty = dirty
         self._update_window_title()
@@ -509,6 +577,7 @@ class MainWindow(QMainWindow):
         self.editor_widget.refresh_part_list()
         self.stack.setCurrentIndex(1)
         self.switch_editor_btn.setText("← 메인 화면으로 돌아가기")
+        self._update_undo_actions()
 
     def _sync_edited_library_parts_to_project(
         self, confirm_unassign: Callable[[list[tuple[str, str, str]]], bool] | None = None
@@ -569,7 +638,7 @@ class MainWindow(QMainWindow):
             for lib_part in edited_Candidates.values():
                 self.project.sync_part_definition(lib_part)
             if edited_Candidates:
-                self.mark_dirty(True)
+                self._record_edit("편집기 부품 변경 반영")
                 self.statusBar().showMessage(
                     f"연결기 부품 변경사항({len(edited_Candidates)}종)이 현재 프로젝트에 반영되었습니다.",
                     5000,
@@ -589,6 +658,7 @@ class MainWindow(QMainWindow):
 
         self.stack.setCurrentIndex(0)
         self.switch_editor_btn.setText("연결기 부품 편집기 열기")
+        self._update_undo_actions()
         self._refresh_available_parts()
         self._refresh_sidebar()
         self._refresh_current_connector_views(reset_canvas_view=False)
@@ -599,7 +669,7 @@ class MainWindow(QMainWindow):
         self.pinmap_panel.update_available_parts(parts)
 
     def _refresh_sidebar(
-        self, select_designator: str | None = None
+        self, select_designator: str | None = None, keep_table_state: bool = False
     ) -> None:
         """사이드바에 연결기를 식별자의 자연 정렬 순서로 표시하고 신호 중복 경고 아이콘을 표시한다 (제3.1절)."""
         self._syncing_sidebar = True
@@ -633,7 +703,9 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_sidebar = False
 
-        self._refresh_current_connector_views(reset_canvas_view=False)
+        self._refresh_current_connector_views(
+            reset_canvas_view=False, keep_table_state=keep_table_state
+        )
         self.update_status_bar()
 
     def build_connector_context_menu(
@@ -686,7 +758,7 @@ class MainWindow(QMainWindow):
         self._refresh_current_connector_views(reset_canvas_view=True)
 
     def _refresh_current_connector_views(
-        self, reset_canvas_view: bool = False
+        self, reset_canvas_view: bool = False, keep_table_state: bool = False
     ) -> None:
         conn = self.current_connector
         part = (
@@ -697,7 +769,9 @@ class MainWindow(QMainWindow):
         self.pinmap_panel.set_context(
             self.project, conn, part, reset_view=reset_canvas_view
         )
-        self.signal_table_panel.set_context(self.project, conn, part)
+        self.signal_table_panel.set_context(
+            self.project, conn, part, keep_state=keep_table_state
+        )
 
     def add_connector(
         self,
@@ -710,7 +784,7 @@ class MainWindow(QMainWindow):
         self.commands.add_connector(designator, part)
         conn = self.project.get_connector(designator)
         assert conn is not None
-        self.mark_dirty(True)
+        self._record_edit("연결기 추가")
         self._refresh_sidebar(select_designator=conn.designator)
         self._refresh_current_connector_views(reset_canvas_view=True)
         return conn
@@ -754,7 +828,7 @@ class MainWindow(QMainWindow):
                 f"이미 존재하는 연결기 식별자입니다: '{norm_new}'",
             )
             return
-        self.mark_dirty(True)
+        self._record_edit("연결기 식별자 변경", focus=norm_new)
         self._refresh_sidebar(select_designator=norm_new)
 
     def remove_selected_connector(self) -> None:
@@ -774,7 +848,7 @@ class MainWindow(QMainWindow):
         )
         if ans == QMessageBox.StandardButton.Yes:
             self.commands.remove_connector(conn.designator)
-            self.mark_dirty(True)
+            self._record_edit("연결기 제거")
             self._refresh_sidebar()
             self._refresh_current_connector_views(reset_canvas_view=True)
 
@@ -785,7 +859,7 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_signal_types_modified(self) -> None:
-        self.mark_dirty(True)
+        self._record_edit("신호유형 관리")
         self.pinmap_panel.canvas.redraw()
         self.signal_table_panel.refresh_table()
 
@@ -802,7 +876,7 @@ class MainWindow(QMainWindow):
             else None
         )
         self.commands.change_connector_part(conn.designator, new_part)
-        self.mark_dirty(True)
+        self._record_edit("연결기 부품 변경")
         self._refresh_sidebar(select_designator=conn.designator)
         self._refresh_current_connector_views(reset_canvas_view=True)
 
@@ -811,7 +885,7 @@ class MainWindow(QMainWindow):
         if conn is None:
             return
         conn.flip_horizontal = checked
-        self.mark_dirty(True)
+        self._record_edit(f"좌우 반전: {conn.designator}")
         self.pinmap_panel.canvas.redraw()
 
     def _on_pin_signal_assigned_from_canvas(
@@ -824,15 +898,16 @@ class MainWindow(QMainWindow):
         if conn.assign_signal_from_pinmap(
             pin_designator, signal_name or None, part
         ):
-            self.mark_dirty(True)
+            action = f"신호 {signal_name} 할당" if signal_name else "할당 해제"
+            self._record_edit(f"핀 {pin_designator} {action}")
             self.signal_table_panel.refresh_table()
             self.signal_table_panel.select_row_for_pin(pin_designator)
             self.pinmap_panel.canvas.redraw()
             self._refresh_sidebar(select_designator=conn.designator)
 
-    def _on_signal_table_data_changed(self) -> None:
+    def _on_signal_table_data_changed(self, description: str) -> None:
         conn = self.current_connector
-        self.mark_dirty(True)
+        self._record_edit(description)
         self.pinmap_panel.canvas.redraw()
         if conn is not None:
             self._refresh_sidebar(select_designator=conn.designator)
@@ -846,9 +921,10 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_or_save():
             return
         self.project = Project(name="새 프로젝트")
-        self.commands.clear()
+        self.commands.reset()
         self.current_file_path = None
         self.mark_dirty(False)
+        self._update_undo_actions()
         self._refresh_sidebar()
         self._refresh_current_connector_views(reset_canvas_view=True)
 
@@ -925,10 +1001,11 @@ class MainWindow(QMainWindow):
                 did_sync = True
 
         self.project = loaded
-        self.commands.clear()
+        self.commands.reset(saved=not did_sync)
         self.current_file_path = target
         self._add_recent_file(target)
         self.mark_dirty(did_sync)
+        self._update_undo_actions()
         self._refresh_available_parts()
         self._refresh_sidebar()
         self._refresh_current_connector_views(reset_canvas_view=True)
@@ -977,6 +1054,7 @@ class MainWindow(QMainWindow):
         self.current_file_path = target
         self.project.name = target.stem
         self._add_recent_file(target)
+        self.commands.mark_saved()
         self.mark_dirty(False)
         self.statusBar().showMessage(
             f"프로젝트 저장 완료: {target.name}", 4000

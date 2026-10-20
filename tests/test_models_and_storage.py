@@ -416,3 +416,52 @@ def test_part_geometry_outline_area_and_grid_snap() -> None:
     part.pins[1].x = part.pins[0].x + 4.0
     with pytest.raises(ValueError):
         snap_part_to_grid(part, 10.0)
+
+
+def test_command_history_undo_redo_limit_and_saved_state() -> None:
+    """편집 이력: 기록·실행 취소·다시 실행, 100단계 제한, 저장 시점 판정, 이름 유지 (제3.13절)."""
+    from jeonnector.commands import CommandDispatcher
+
+    project = Project(name="이력")
+    part = create_default_parts()[0]
+    commands = CommandDispatcher(lambda: project)
+    assert not commands.can_undo() and commands.is_at_saved_state()
+    assert not commands.record("변경 없음")
+
+    commands.add_connector("J1", part)
+    conn = project.get_connector("J1")
+    conn.add_signal_row("GND", "1", part, "접지")
+    assert commands.record("신호 추가", focus="J1")
+    conn.flip_horizontal = True
+    commands.record("좌우 반전", focus="J1")
+    commands.mark_saved()
+    project.name = "저장된 이름"
+
+    step = commands.undo()
+    assert step.description == "좌우 반전" and step.focus_before == "J1"
+    assert project.get_connector("J1").flip_horizontal is False
+    assert project.name == "저장된 이름"
+    assert not commands.is_at_saved_state()
+    commands.undo()
+    assert not project.get_connector("J1").signals
+    assert commands.redo_description() == "신호 추가"
+    commands.redo()
+    commands.redo()
+    assert project.get_connector("J1").flip_horizontal is True
+    assert commands.is_at_saved_state()
+
+    # 새 편집을 기록하면 다시 실행 이력은 사라진다.
+    commands.undo()
+    project.get_connector("J1").signals["GND"].color = "#123456"
+    commands.record("색상")
+    assert not commands.can_redo()
+
+    for i in range(120):
+        project.get_connector("J1").signals["GND"].color = f"#0000{i:02x}"
+        commands.record(f"색상 {i}")
+    assert commands.history_count == 100
+
+    removed = CommandDispatcher(lambda: project)
+    removed.remove_connector("J1")
+    assert removed.undo().focus_before == "J1"
+    assert project.get_connector("J1") is not None

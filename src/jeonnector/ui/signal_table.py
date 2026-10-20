@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QModelIndex, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -72,6 +72,25 @@ def use_blank_placeholder(combo: QComboBox, placeholder: str) -> None:
     combo.textActivated.connect(
         lambda text: combo.setEditText("") if text == placeholder else None
     )
+
+
+class UndoPassThroughFilter(QObject):
+    """입력 칸이 비어 있고 되돌릴 글자도 없으면 Ctrl+Z·다시 실행 단축키를 창의 실행 취소·다시 실행으로 넘긴다.
+
+    자동 완성은 글자 되돌리기 기록을 지우므로, 글자가 남은 칸에서는 넘기지 않는다.
+    """
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # 콤보 상자는 단축키 판정을 줄 편집기에 직접 넘기므로 콤보 상자에서 가로챈다.
+        if event.type() == QEvent.Type.ShortcutOverride and isinstance(obj, QComboBox):
+            line_edit = obj.lineEdit()
+            if line_edit.text():
+                return False
+            if event.matches(QKeySequence.StandardKey.Undo) and not line_edit.isUndoAvailable():
+                return True
+            if event.matches(QKeySequence.StandardKey.Redo) and not line_edit.isRedoAvailable():
+                return True
+        return False
 
 
 def readable_text_color(background: QColor) -> str:
@@ -168,7 +187,7 @@ class SignalTableWidget(QTableWidget):
 class SignalTablePanel(QWidget):
     """선택한 연결기의 신호표 및 편집·정렬 기능을 제공하는 우측 패널."""
 
-    dataChanged = Signal()
+    dataChanged = Signal(str)  # 편집 설명 (실행 취소 메뉴에 표시)
     pinSelectionChanged = Signal(str)
     statusMessage = Signal(str)
 
@@ -186,6 +205,7 @@ class SignalTablePanel(QWidget):
         self.commands = commands
         self.draft = SignalDraft()
         self._draft_return_pending = False
+        self._undo_pass_through = UndoPassThroughFilter(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -335,6 +355,7 @@ class SignalTablePanel(QWidget):
             combo.lineEdit().returnPressed.connect(
                 lambda source=source: self._on_draft_return(source)
             )
+            combo.installEventFilter(self._undo_pass_through)
         self._update_draft_attributes()
         QWidget.setTabOrder(self.draft_pin_combo, self.draft_name_combo)
         QWidget.setTabOrder(self.draft_name_combo, self.draft_type_combo)
@@ -444,7 +465,9 @@ class SignalTablePanel(QWidget):
             return True
 
         if self.commands:
-            success = self.commands.execute(f"신호 행 추가: {name}", add)
+            success = self.commands.execute(
+                f"신호 행 추가: {name}", add, focus=self.connector.designator
+            )
         else:
             success = add()
         if not success:
@@ -453,7 +476,7 @@ class SignalTablePanel(QWidget):
                        if r.signal_name == name and r.pin_designator == pin), "")
         self.draft = SignalDraft()
         self.refresh_table(preserve_row_id=row_id)
-        self.dataChanged.emit()
+        self.dataChanged.emit(f"신호 행 추가: {name}")
         self._emit_current_row_pin_selection(self.table.currentRow())
         # 다음 신호를 이어서 입력하도록 입력 행의 첫 칸으로 돌아간다.
         if self.draft_pin_combo.isEnabled():
@@ -467,8 +490,15 @@ class SignalTablePanel(QWidget):
         project: Project | None,
         connector: ConnectorInstance | None,
         part: ConnectorPart | None,
+        keep_state: bool = False,
     ) -> None:
-        switching_connector = connector is not self.connector
+        # 실행 취소·다시 실행으로 같은 연결기가 새 객체로 바뀐 경우에는 입력 중인 행과 정렬을 유지한다.
+        switching_connector = connector is not self.connector and not (
+            keep_state
+            and connector is not None
+            and self.connector is not None
+            and connector.designator == self.connector.designator
+        )
         if switching_connector:
             self.draft = SignalDraft()
             self.table.clearContents()
@@ -679,7 +709,7 @@ class SignalTablePanel(QWidget):
             if sig and sig.signal_type:
                 self.project.ensure_signal_type(sig.signal_type)
             self.refresh_table(preserve_row_id=row_id)
-            self.dataChanged.emit()
+            self.dataChanged.emit(f"신호명 변경: {norm_sig}")
             self._emit_current_row_pin_selection(self.table.currentRow())
             return True
 
@@ -697,9 +727,10 @@ class SignalTablePanel(QWidget):
                 self.refresh_table(preserve_row=row)
                 return False
 
+            sig_name_for_pin = self.connector.rows[row].signal_name
             self.connector.set_row_pin(row, raw_pin, self.part)
             self.refresh_table(preserve_row_id=row_id)
-            self.dataChanged.emit()
+            self.dataChanged.emit(f"핀 번호 변경: {sig_name_for_pin}")
             self._emit_current_row_pin_selection(self.table.currentRow())
             return True
 
@@ -709,7 +740,7 @@ class SignalTablePanel(QWidget):
             if cleaned in ("", "없음", "(없음)"):
                 self.connector.set_signal_type(sig_name, "")
                 self.refresh_table(preserve_row_id=row_id)
-                self.dataChanged.emit()
+                self.dataChanged.emit(f"신호유형 변경: {sig_name}")
                 self._emit_current_row_pin_selection(self.table.currentRow())
                 return True
 
@@ -725,7 +756,7 @@ class SignalTablePanel(QWidget):
             norm_type = self.project.ensure_signal_type(cleaned)
             self.connector.set_signal_type(sig_name, norm_type)
             self.refresh_table(preserve_row_id=row_id)
-            self.dataChanged.emit()
+            self.dataChanged.emit(f"신호유형 변경: {sig_name}")
             self._emit_current_row_pin_selection(self.table.currentRow())
             return True
 
@@ -810,7 +841,7 @@ class SignalTablePanel(QWidget):
             return False
         next_row = min(row_index, len(self.connector.rows))
         self.refresh_table(preserve_row=next_row)
-        self.dataChanged.emit()
+        self.dataChanged.emit("신호 행 삭제")
         self._emit_current_row_pin_selection(next_row)
         return True
 
@@ -883,7 +914,7 @@ class SignalTablePanel(QWidget):
                 f"개별 색상이 지정된 신호 {overridden}개는 '{type_name}' 유형 색상 대신 개별 색상으로 표시됩니다."
             )
         self.refresh_table(preserve_row=row)
-        self.dataChanged.emit()
+        self.dataChanged.emit(f"신호유형 색상 변경: {type_name}")
 
     def _rename_signal_type(self, row: int, type_name: str) -> None:
         new_name = prompt_rename_signal_type(self, self.project, type_name)
@@ -893,13 +924,13 @@ class SignalTablePanel(QWidget):
         if normalize_signal_type_name(self.draft.signal_type) == type_name:
             self.draft.signal_type = new_name
         self.refresh_table(preserve_row=row)
-        self.dataChanged.emit()
+        self.dataChanged.emit(f"신호유형 이름 변경: {type_name} -> {new_name}")
 
     def _clear_signal_color(self, row: int) -> None:
         sig_name = self.connector.rows[row].signal_name
         self.connector.set_signal_color(sig_name, "")
         self.refresh_table(preserve_row=row)
-        self.dataChanged.emit()
+        self.dataChanged.emit(f"신호 색상 없음: {sig_name}")
 
     def _pick_signal_color(self, row: int) -> None:
         if self.connector is None or self.project is None:
@@ -916,4 +947,4 @@ class SignalTablePanel(QWidget):
         if chosen.isValid():
             self.connector.set_signal_color(sig_name, chosen.name())
             self.refresh_table(preserve_row=row)
-            self.dataChanged.emit()
+            self.dataChanged.emit(f"신호 색상 변경: {sig_name}")

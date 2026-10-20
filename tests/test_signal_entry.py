@@ -488,3 +488,53 @@ def test_unassigned_pin_and_no_type_start_blank(window, qtbot):
     qtbot.keyClicks(editor.lineEdit(), "4")
     qtbot.keyClick(editor, Qt.Key.Key_Tab)
     qtbot.waitUntil(lambda: ("SPARE", "4") in rows(window))
+
+
+def test_undo_redo_project_edits_and_focus(window, qtbot):
+    window.show()
+    qtbot.waitUntil(window.isActiveWindow)
+    panel = window.signal_table_panel
+    window.commands.mark_saved()
+    window.mark_dirty(False)
+    assert not window.undo_act.isEnabled() or window.commands.can_undo()
+
+    add(panel, "GND", "1")
+    assert window.undo_act.text() == "실행 취소: 신호 행 추가: GND"
+    window.pinmap_panel.flip_checkbox.setChecked(True)
+    window._on_pin_signal_assigned_from_canvas("2", "GND")
+    assert window.current_connector.pins_for_signal("GND") == {"1", "2"}
+
+    window.add_connector("J2", window.part_library.list_parts()[0])
+    assert window.current_connector.designator == "J2"
+    assert window.undo()  # 연결기 추가 취소
+    assert window.project.get_connector("J2") is None
+    assert window.undo()  # 핀맵 할당 취소, J1을 보여 준다
+    assert window.current_connector.designator == "J1"
+    assert window.current_connector.pins_for_signal("GND") == {"1"}
+    assert window.undo()  # 좌우 반전 취소
+    assert not window.pinmap_panel.flip_checkbox.isChecked()
+    assert not window.current_connector.flip_horizontal
+    assert window.undo()  # 신호 추가 취소 → 저장 시점으로 돌아옴
+    assert not window.current_connector.signals
+    assert not window.is_dirty and not window.windowTitle().endswith("*")
+    assert window.redo()
+    assert rows(window) == [("GND", "1")]
+    assert window.is_dirty
+
+    # 글자가 있는 입력 칸에서는 Ctrl+Z가 프로젝트 실행 취소로 넘어가지 않고, 빈 칸에서는 넘어간다.
+    window._ask_draft_action = lambda: pytest.fail("입력 중 Ctrl+Z가 프로젝트 실행 취소로 넘어감")
+    panel.draft_pin_combo.setFocus()
+    qtbot.keyClicks(panel.draft_pin_combo.lineEdit(), "3")
+    qtbot.keyClick(panel.draft_pin_combo, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert rows(window) == [("GND", "1")]
+    del window._ask_draft_action
+    panel.reset_draft()
+    panel.draft_pin_combo.setFocus()
+    qtbot.keyClick(panel.draft_pin_combo, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not window.current_connector.signals)
+
+    window.switch_to_editor_view()
+    assert not window.undo_act.isEnabled() and not window.redo_act.isEnabled()
+    assert not window.redo()
+    window.switch_to_project_view()
+    assert window.redo_act.isEnabled()
