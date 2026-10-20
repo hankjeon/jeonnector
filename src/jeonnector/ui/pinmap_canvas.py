@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from jeonnector.label_layout import place_labels
 from jeonnector.model import (
     DUPLICATE_PIN_COLOR,
     DUPLICATE_PIN_LABEL,
@@ -55,7 +56,7 @@ AURA_ALPHA = 68
 # 신호 색상과 신호유형 색상이 모두 '없음'인 신호의 주변 영역 색상
 AURA_FALLBACK_COLOR = "#94a3b8"
 # 신호명 글자 크기: 그림 좌표 기준 크기로 핀과 함께 커지다가 화면 기준 상한에서 멈춘다.
-# 표시 폭은 핀 간격이며, 넘치면 뒷부분을 줄임표로 줄인다 (제3.4절).
+# 자리는 label_layout의 자동 배치(아래·위 × 한 줄·두 줄)로 정한다 (제3.4절).
 SIGNAL_LABEL_SCENE_PX = 6.5
 SIGNAL_LABEL_MAX_SCREEN_PX = 11.0
 
@@ -510,11 +511,9 @@ class PinmapCanvas(QGraphicsView):
         dup_pins = self._connector.duplicate_pins()
         show_signal_labels = self.should_show_signal_labels()
 
-        zoom = self.current_zoom_scale
-        label_px = min(SIGNAL_LABEL_MAX_SCREEN_PX, SIGNAL_LABEL_SCENE_PX * zoom)
-        label_width_px = min_dist * zoom
+        labels: dict[str, tuple[str, str, bool]] = {}
         for pin in self._part.pins:
-            self._draw_single_pin(
+            label = self._draw_single_pin(
                 pin=pin,
                 width=width,
                 flip=flip,
@@ -524,9 +523,72 @@ class PinmapCanvas(QGraphicsView):
                 is_duplicate=(pin.designator in dup_pins),
                 is_bold=(pin.designator == self._selected_pin),
                 show_signal_labels=show_signal_labels,
-                label_px=label_px,
-                label_width_px=label_width_px,
             )
+            if label is not None:
+                labels[pin.designator] = label
+        if labels:
+            self._draw_signal_labels(labels, width, flip, diameter, same_signal_pins)
+
+    def _draw_signal_labels(
+        self,
+        labels: dict[str, tuple[str, str, bool]],
+        width: float,
+        flip: bool,
+        diameter: float,
+        same_signal_pins: set[str],
+    ) -> None:
+        """신호명을 자동 배치해 화면 픽셀 단위로 그린다 (제3.4절).
+
+        선택한 핀과 같은 신호의 핀을 먼저 배치해 지금 보는 신호가 좋은 자리를 얻게 한다.
+        """
+        assert self._part is not None
+        zoom = self.current_zoom_scale
+        fonts: dict[bool, QFont] = {}
+        for bold in (False, True):
+            font = QFont("Malgun Gothic")
+            font.setPixelSize(
+                max(1, round(min(SIGNAL_LABEL_MAX_SCREEN_PX, SIGNAL_LABEL_SCENE_PX * zoom)))
+            )
+            font.setBold(bold)
+            fonts[bold] = font
+        metrics = {bold: QFontMetricsF(font) for bold, font in fonts.items()}
+
+        def is_bold(des: str) -> bool:
+            return labels[des][2] or des == self._selected_pin
+
+        screen = {
+            pin.designator: (display_pin_x(pin.x, width, flip) * zoom, pin.y * zoom)
+            for pin in self._part.pins
+        }
+        pin_order = [p.designator for p in self._part.ordered_pins() if p.designator in labels]
+        order = sorted(
+            pin_order,
+            key=lambda d: (d != self._selected_pin, d not in same_signal_pins),
+        )
+        placements = place_labels(
+            screen,
+            {des: text for des, (text, _, _) in labels.items()},
+            order,
+            pin_radius=diameter / 2.0 * zoom,
+            line_height=metrics[False].height(),
+            measure=lambda des, text: metrics[is_bold(des)].horizontalAdvance(text),
+        )
+        for des, placement in placements.items():
+            text, tooltip, is_duplicate = labels[des]
+            sx, sy = screen[des]
+            for i, line in enumerate(placement.lines):
+                item = self._scene.addSimpleText(line, fonts[is_bold(des)])
+                item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                item.setData(Qt.ItemDataRole.UserRole, text)
+                item.setToolTip(tooltip)
+                item.setBrush(QBrush(QColor("#b91c1c" if is_duplicate else "#1e293b")))
+                item.setPos(sx / zoom, sy / zoom)
+                line_width = item.boundingRect().width()
+                cx, _ = placement.rect.center
+                item.setTransform(QTransform.fromTranslate(
+                    cx - sx - line_width / 2.0,
+                    placement.rect.top - sy + i * metrics[False].height(),
+                ))
 
     def _draw_single_pin(
         self,
@@ -539,9 +601,8 @@ class PinmapCanvas(QGraphicsView):
         is_duplicate: bool,
         is_bold: bool,
         show_signal_labels: bool,
-        label_px: float = SIGNAL_LABEL_MAX_SCREEN_PX,
-        label_width_px: float = 0.0,
-    ) -> None:
+    ) -> tuple[str, str, bool] | None:
+        """핀 도형과 번호를 그리고, 표시할 신호명이 있으면 (신호명, 툴팁, 중복 여부)를 돌려준다."""
         assert self._connector is not None
         px = display_pin_x(pin.x, width, flip)
         py = pin.y
@@ -621,29 +682,10 @@ class PinmapCanvas(QGraphicsView):
             py - num_bounds.height() / 2.0,
         )
 
-        # 충분히 확대되었을 때(또는 신호 중복 시) 신호명 표시 (제3.4절)
-        # 화면 픽셀 단위로 그려 글자 크기는 상한에서 멈추고, 핀 간격에 들어가는 만큼 보여 준다.
+        # 충분히 확대되었을 때(또는 신호 중복 시) 신호명을 표시한다. 자리는 _draw_signal_labels가 정한다.
         if signal_label and (show_signal_labels or is_duplicate):
-            sig_font = QFont("Malgun Gothic")
-            sig_font.setPixelSize(max(1, round(label_px)))
-            if is_duplicate or is_bold:
-                sig_font.setBold(True)
-            display_label = signal_label
-            if not is_duplicate and label_width_px > 0:
-                display_label = QFontMetricsF(sig_font).elidedText(
-                    signal_label, Qt.TextElideMode.ElideRight, label_width_px
-                )
-            sig_item = self._scene.addSimpleText(display_label, sig_font)
-            sig_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            sig_item.setData(Qt.ItemDataRole.UserRole, signal_label)
-            sig_item.setToolTip(tooltip_text)
-            sig_item.setBrush(
-                QBrush(QColor("#b91c1c" if is_duplicate else "#1e293b"))
-            )
-            sig_item.setPos(px, py + half + 1.2)
-            sig_item.setTransform(
-                QTransform.fromTranslate(-sig_item.boundingRect().width() / 2.0, 0.0)
-            )
+            return signal_label, tooltip_text, is_duplicate
+        return None
 
 
 class ElidedLabel(QLabel):

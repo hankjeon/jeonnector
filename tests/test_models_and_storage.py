@@ -515,3 +515,45 @@ def test_default_signal_types_for_new_project() -> None:
     }
     old = Project.from_dict({"schema_version": 1, "signal_types": {"전원": "#ef4444"}})
     assert old.signal_types == {"전원": "#ef4444"}
+
+
+def test_label_layout_rules() -> None:
+    """신호명 자동 배치 규칙: 두 줄 나누기, 줄임표, 겹침·간격·가까운 핀 조건, 우선순위 (제3.4절)."""
+    from jeonnector.label_layout import (
+        LABEL_SPACING_PX,
+        label_lines,
+        place_labels,
+        split_two_lines,
+    )
+
+    assert split_two_lines("HEATER_POWER_28V_MAIN") == ("HEATER_POWER_", "28V_MAIN")
+    assert split_two_lines("ABCDEFGH") == ("ABCD", "EFGH")
+    assert label_lines("HEATER_POWER", 12, 1) == ("HEATER_POWER",)
+    assert label_lines("HEATER_POWER", 6, 1) == ("HEATER…",)
+    assert label_lines("HEATER_POWER_28V", 10, 2) == ("HEATER_", "POW…")
+
+    def measure(_des: str, text: str) -> float:
+        return 6.0 * len(text)
+
+    # 일렬 핀 5개, 간격 40px, 긴 이름: 위아래로 엇갈리고 서로 겹치지 않는다.
+    pins = {str(i): (100.0 + 40.0 * i, 100.0) for i in range(5)}
+    names = {d: f"SIGNAL_NAME_LONG_{d}" for d in pins}
+    placed = place_labels(pins, names, list(pins), 8.0, 12.0, measure)
+    assert set(placed) == set(pins)
+    rects = [p.rect for p in placed.values()]
+    for i, a in enumerate(rects):
+        for b in rects[i + 1:]:
+            spaced = type(a)(a.left - LABEL_SPACING_PX, a.top, a.width + 2 * LABEL_SPACING_PX, a.height)
+            assert not spaced.intersects(b)
+    assert {p.rect.top < 100.0 for p in placed.values()} == {True, False}
+
+    # 짧은 이름은 최소 글자 수보다 짧아도 표시하고, 공간이 넉넉하면 아래 한 줄이 기본이다.
+    single = place_labels({"1": (0.0, 0.0)}, {"1": "GND"}, ["1"], 8.0, 12.0, measure)
+    assert single["1"].lines == ("GND",) and single["1"].rect.top > 0
+
+    # 먼저 배치하는 핀이 더 좋은 자리를 얻는다.
+    crowded = {str(i): (100.0 + 20.0 * i, 100.0) for i in range(3)}
+    crowded_names = {d: "VERY_LONG_SIGNAL_NAME" for d in crowded}
+    first = place_labels(crowded, crowded_names, ["1", "0", "2"], 8.0, 12.0, measure)
+    shown = {d: "".join(p.lines).replace("…", "") for d, p in first.items()}
+    assert len(shown["1"]) >= max(len(v) for v in shown.values())
