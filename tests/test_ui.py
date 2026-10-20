@@ -335,7 +335,10 @@ def test_editor_new_part_outline_tools_and_snap(qapp: QApplication, tmp_path: Pa
     assert len(points) == 4
     assert min(x for x, _ in points) == pytest.approx(min(p.x for p in part.pins) - 30.0)
     assert part.width == pytest.approx(max(x for x, _ in points) - min(x for x, _ in points) + 24.0)
-    assert [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins] == pytest.approx(center_offsets)
+    # 영역 중심(그리드 원점)은 그리드 간격의 배수만큼만 옮겨지므로 핀의 격자 위치가 유지된다.
+    for (ox, oy), p in zip(center_offsets, part.pins):
+        for delta in (p.x - part.width / 2 - ox, p.y - part.height / 2 - oy):
+            assert delta / editor.grid_spacing == pytest.approx(round(delta / editor.grid_spacing))
     center = polygon_center(points)
     assert _has_center_handle(editor.canvas, center.x(), center.y())
 

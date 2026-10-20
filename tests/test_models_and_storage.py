@@ -372,7 +372,7 @@ def test_row_rename_copies_or_follows_signal_attributes() -> None:
 
 
 def test_part_geometry_outline_area_and_grid_snap() -> None:
-    """핀에 맞춘 외곽 생성, 중심 대칭 영역 맞춤, 스냅에 맞추기 계산 (제4.4~4.5절)."""
+    """핀에 맞춘 외곽 생성, 격자를 유지하는 영역 맞춤, 스냅에 맞추기 계산 (제4.4~4.5절)."""
     from jeonnector.part_geometry import (
         fit_part_area,
         fitted_circle_outline,
@@ -394,13 +394,30 @@ def test_part_geometry_outline_area_and_grid_snap() -> None:
     circle = fitted_circle_outline(part).geometry
     assert circle == {"cx": 120.0, "cy": 100.0, "radius": 50.0}
 
-    # 중심(200, 150) 기준 대칭으로 줄이며, 중심에 대한 핀의 상대 위치는 유지된다.
-    before = [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins]
+    # 내용에 거의 딱 맞게 줄이고, 중심을 그리드 간격의 배수만큼만 옮겨 격자에 맞춘 핀이 계속 격자 위에 있다.
+    def on_grid(target: ConnectorPart) -> bool:
+        cx, cy = target.width / 2, target.height / 2
+        return all(
+            (snap_coord(q.x, cx, 10.0), snap_coord(q.y, cy, 10.0)) == pytest.approx((q.x, q.y))
+            for q in target.pins
+        )
+
+    assert on_grid(part)
     part.graphics = [fitted_polygon_outline(part)]
-    fit_part_area(part)
-    assert (part.width, part.height) == pytest.approx((284.0, 168.0))
-    after = [(p.x - part.width / 2, p.y - part.height / 2) for p in part.pins]
-    assert after == pytest.approx(before)
+    fit_part_area(part, 10.0)
+    assert (part.width, part.height) == pytest.approx((124.0, 88.0))  # 딱 맞으면 124×78
+    assert on_grid(part)
+
+    # 핀 간격을 좁히고 외곽 오른쪽만 당겨도 영역이 줄어든다 (중심 고정 대칭이면 244 그대로 남음).
+    dsub = create_default_parts()[0].clone()
+    x0 = min(q.x for q in dsub.pins)
+    for q in dsub.pins:
+        q.x = round(x0 + (q.x - x0) * 0.75, 2)
+    pts = dsub.graphics[0].geometry["points"]
+    right = max(q.x for q in dsub.pins) + 30.0
+    pts[1][0], pts[2][0] = right, right - 18.0
+    fit_part_area(dsub, 10.0)
+    assert dsub.width == pytest.approx(204.0)
 
     part.pins[1].x += 3.0
     part.graphics[0].geometry["points"][0][0] += 4.0

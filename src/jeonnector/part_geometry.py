@@ -86,18 +86,29 @@ def translate_part(part: ConnectorPart, dx: float, dy: float) -> None:
             ]
 
 
-def fit_part_area(part: ConnectorPart) -> tuple[float, float]:
-    """부품 영역을 외곽선·핀의 가장 바깥에서 FRAME만큼 여유를 두고 중심 기준 대칭으로 맞춘다.
+def _grid_offset(offset: float, spacing: float) -> float:
+    """중심을 옮길 거리. 그리드 간격이 있으면 그 배수로 반올림해 격자가 밀리지 않게 한다."""
+    if spacing <= 0:
+        return offset
+    return round(offset / spacing) * spacing
 
-    중심에 대한 상대 위치를 유지하도록 좌표를 함께 옮기므로 중심 원점의 그리드가 밀리지 않는다.
-    내용이 없으면 영역을 그대로 둔다. 옮긴 거리(dx, dy)를 반환한다.
+
+def fit_part_area(part: ConnectorPart, spacing: float = 0.0) -> tuple[float, float]:
+    """부품 영역을 외곽선·핀의 가장 바깥에서 FRAME만큼 여유를 두고 거의 딱 맞게 맞춘다 (제4.4절).
+
+    영역 중심(그리드 원점)을 내용의 가운데로 옮기되 옮기는 거리를 그리드 간격의 배수로 반올림하고,
+    좌표를 함께 옮겨 격자에 맞춘 점이 계속 격자 위에 있게 한다. 그래서 한쪽 여백은 최대
+    그리드 간격의 절반만큼 더 남을 수 있다. 내용이 없으면 영역을 그대로 둔다. 옮긴 거리(dx, dy)를 반환한다.
     """
     points = _content_points(part)
     if not points:
         return 0.0, 0.0
-    cx, cy = part.width / 2.0, part.height / 2.0
-    half_w = round(max(abs(x - cx) for x, _ in points) + FRAME, 2)
-    half_h = round(max(abs(y - cy) for _, y in points) + FRAME, 2)
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    cx = part.width / 2.0 + _grid_offset((min(xs) + max(xs)) / 2.0 - part.width / 2.0, spacing)
+    cy = part.height / 2.0 + _grid_offset((min(ys) + max(ys)) / 2.0 - part.height / 2.0, spacing)
+    half_w = round(max(abs(x - cx) for x in xs) + FRAME, 2)
+    half_h = round(max(abs(y - cy) for y in ys) + FRAME, 2)
     dx, dy = round(half_w - cx, 2), round(half_h - cy, 2)
     if dx or dy:
         translate_part(part, dx, dy)

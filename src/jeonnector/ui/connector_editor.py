@@ -1512,7 +1512,7 @@ class ConnectorEditorWidget(QMainWindow):
             pin.display_order = idx
         # 부품 영역을 외곽·핀에 맞춘다. 좌표가 옮겨지면 화면도 같이 옮겨 제자리에 보이게 한다 (제4.4절).
         view_center = self.canvas.mapToScene(self.canvas.viewport().rect().center())
-        dx, dy = fit_part_area(self.current_part)
+        dx, dy = fit_part_area(self.current_part, self.grid_spacing)
         if dx or dy:
             rebuild_table = True
         if rebuild_table:
