@@ -46,6 +46,7 @@ class MarkdownImportDialog(QDialog):
                 cell = QTableWidgetItem(value)
                 cell.setToolTip(value)
                 self.table.setItem(index, column, cell)
+        self.table.resizeRowsToContents()
         layout.addWidget(self.table)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("선택 파일 등록")

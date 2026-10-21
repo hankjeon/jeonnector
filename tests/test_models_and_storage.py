@@ -141,7 +141,7 @@ def test_signal_row_rules_and_row_level_rename() -> None:
     conn_empty = project.add_connector("J_EMPTY", None)
     assert conn_empty.add_or_update_row_signal(0, "pwr_5v")
     assert conn_empty.rows[0].signal_name == "PWR_5V"
-    assert conn_empty.set_row_pin(0, "1", None)
+    assert conn_empty.set_row_pin(0, "1")
 
     # 2. 신호 생성 시 기본 신호유형과 색상은 '없음'("")이고 핀 채움색은 흰색(#ffffff)
     conn = project.add_connector("J1", custom_part)
@@ -154,11 +154,11 @@ def test_signal_row_rules_and_row_level_rename() -> None:
     assert project.effective_signal_color(conn, "GND") == NO_COLOR_PIN_FILL
 
     # GND를 3개 핀(1, 2, A1)에 할당
-    assert conn.set_row_pin(0, "1", part)
+    assert conn.set_row_pin(0, "1")
     assert conn.add_or_update_row_signal(1, "GND")
-    assert conn.set_row_pin(1, "2", part)
+    assert conn.set_row_pin(1, "2")
     assert conn.add_or_update_row_signal(2, "GND")
-    assert conn.set_row_pin(2, "A1", part)
+    assert conn.set_row_pin(2, "A1")
     assert len(conn.rows) == 3
 
     # 3. 제3.6절 신호명 편집: 한 행의 신호명을 바꾸면 그 행만 다른 신호(GROUND)가 되고 다른 두 행은 GND로 유지
@@ -170,12 +170,12 @@ def test_signal_row_rules_and_row_level_rename() -> None:
 
     # 4. 제3.6절 행 규칙:
     # - 여러 핀에 할당된 신호(GND: 1, A1)의 한 핀(A1)을 해제하면 그 행은 사라짐
-    assert conn.set_row_pin(2, "미할당", part)
+    assert conn.set_row_pin(2, "미할당")
     assert len(conn.rows) == 2
     assert conn.pins_for_signal("GND") == {"1"}
 
     # - 신호의 마지막 핀(GND: 1)이 해제되면 미할당 행 하나로 남음
-    assert conn.set_row_pin(0, "", part)
+    assert conn.set_row_pin(0, "")
     gnd_rows = [r for r in conn.rows if r.signal_name == "GND"]
     assert len(gnd_rows) == 1
     assert gnd_rows[0].pin_designator == ""
@@ -211,11 +211,11 @@ def test_pinmap_context_assign_and_sorting_and_part_sync() -> None:
     conn = project.add_connector("J1", part)
 
     conn.add_or_update_row_signal(0, "SIG_ONLY_3")
-    conn.set_row_pin(0, "3", part)
+    conn.set_row_pin(0, "3")
     conn.add_or_update_row_signal(1, "SIG_MULTI")
-    conn.set_row_pin(1, "1", part)
+    conn.set_row_pin(1, "1")
     conn.add_or_update_row_signal(2, "SIG_MULTI")
-    conn.set_row_pin(2, "3", part)  # 3번 핀에 SIG_ONLY_3과 SIG_MULTI가 중복 할당됨
+    conn.set_row_pin(2, "3")  # 3번 핀에 SIG_ONLY_3과 SIG_MULTI가 중복 할당됨
     conn.add_or_update_row_signal(3, "SIG_NEW")
 
     assert conn.duplicate_pin_count() == 1
@@ -255,8 +255,8 @@ def test_duplicate_pins_and_jnc_schema_validation(tmp_path: Path) -> None:
 
     conn.add_or_update_row_signal(0, "SIG_B")
     conn.add_or_update_row_signal(1, "SIG_A")
-    conn.set_row_pin(0, "3", part)
-    conn.set_row_pin(1, "3", part)
+    conn.set_row_pin(0, "3")
+    conn.set_row_pin(1, "3")
 
     save_file = tmp_path / "dup_project.jnc"
     save_project(project, save_file)
@@ -354,9 +354,9 @@ def test_row_rename_copies_or_follows_signal_attributes() -> None:
     project = Project(name="이름변경")
     part = create_default_parts()[0]
     conn = project.add_connector("J1", part)
-    assert conn.add_signal_row("GDN", "1", part, "GROUND", "#111111")
-    assert conn.add_signal_row("GDN", "2", part)
-    assert conn.add_signal_row("VCC", "3", part, "POWER", "")
+    assert conn.add_signal_row("GDN", "1", "GROUND", "#111111")
+    assert conn.add_signal_row("GDN", "2")
+    assert conn.add_signal_row("VCC", "3", "POWER", "")
 
     gdn_row = next(i for i, r in enumerate(conn.rows) if r.pin_designator == "1")
     assert conn.add_or_update_row_signal(gdn_row, "GND")
@@ -447,7 +447,7 @@ def test_command_history_undo_redo_limit_and_saved_state() -> None:
 
     commands.add_connector("J1", part)
     conn = project.get_connector("J1")
-    conn.add_signal_row("GND", "1", part, "GROUND")
+    conn.add_signal_row("GND", "1", "GROUND")
     assert commands.record("신호 추가", focus="J1")
     conn.flip_horizontal = True
     commands.record("좌우 반전", focus="J1")
@@ -528,6 +528,7 @@ def test_label_layout_rules() -> None:
 
     assert split_two_lines("HEATER_POWER_28V_MAIN") == ("HEATER_POWER_", "28V_MAIN")
     assert split_two_lines("ABCDEFGH") == ("ABCD", "EFGH")
+    assert split_two_lines("RS422/TX_DATA") == ("RS422/", "TX_DATA")
     assert label_lines("HEATER_POWER", 12, 1) == ("HEATER_POWER",)
     assert label_lines("HEATER_POWER", 6, 1) == ("HEATER…",)
     assert label_lines("HEATER_POWER_28V", 10, 2) == ("HEATER_", "POW…")

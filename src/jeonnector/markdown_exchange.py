@@ -157,6 +157,22 @@ def _table_headers(lines: list[str | None], index: int) -> list[str] | None:
     return None
 
 
+COLUMNS = ("핀 번호", "신호명", "신호유형", "색상")
+
+
+def _column_key(header: str) -> str | None:
+    """공백을 무시하고 열 제목을 인식한다(예: `핀번호`, `신호 유형`)."""
+    compact = re.sub(r"\s+", "", header)
+    return next((column for column in COLUMNS if column.replace(" ", "") == compact), None)
+
+
+def _identifier_value(raw: str) -> str:
+    """식별자 값을 셀 전체 백틱 한 쌍에서 꺼낸다."""
+    value = raw.strip()
+    match = re.fullmatch(r"`([^`]*)`", value)
+    return match[1] if match else value
+
+
 def _starts_block(line: str) -> bool:
     return bool(
         re.match(r" {0,3}(?:#{1,6}(?:\s|$)|[-+*](?:\s|$)|\d{1,9}[.)](?:\s|$)|>)", line)
@@ -172,26 +188,31 @@ def _parse_document(text: str) -> tuple[ConnectorInstance, list[str]]:
     for index, line in enumerate(lines):
         if line is None:
             continue
-        match = re.fullmatch(r"\s*[-+*]\s+식별자\s*:\s*(.*)", line)
+        match = re.fullmatch(r"\s*[-+*]\s+(?:\*\*|__)?식별자(?:\*\*|__)?\s*:\s*(.*)", line)
         if match:
             if identifier_seen:
                 raise ValueError(f"{index + 1}행: 식별자 항목이 반복됩니다.")
             identifier_seen = True
-            connector.designator = normalize_signal_name(match[1])
+            connector.designator = normalize_signal_name(_identifier_value(match[1]))
             if connector.designator and not is_valid_connector_id(connector.designator):
                 raise ValueError(f"{index + 1}행: 식별자 형식이 올바르지 않습니다(32자 이하): {match[1]}")
         headers = _table_headers(lines, index)
-        if headers is not None and "신호명" in headers:
+        if headers is not None and "신호명" in map(_column_key, headers):
             tables.append((index, headers))
     if not tables:
         raise ValueError("신호표가 없습니다.")
     if len(tables) > 1:
         raise ValueError(f"{tables[1][0] + 1}행: 신호표가 여러 개입니다.")
     index, headers = tables[0]
-    for header in ("핀 번호", "신호명", "신호유형", "색상"):
-        if headers.count(header) > 1:
-            raise ValueError(f"{index + 1}행: {header} 열이 반복됩니다.")
+    keys = [_column_key(header) for header in headers]
+    for column in COLUMNS:
+        if keys.count(column) > 1:
+            raise ValueError(f"{index + 1}행: {column} 열이 반복됩니다.")
     warnings = []
+    unknown = [header or "(빈 제목)" for header, key in zip(headers, keys) if key is None]
+    if unknown:
+        warnings.append(f"{index + 1}행: 인식하지 못한 열은 무시합니다: {', '.join(unknown)}")
+    pin_only: list[tuple[int, str]] = []
     seen_rows: set[tuple[str, str]] = set()
     for line_number, line in enumerate(lines[index + 2:], index + 3):
         if line is None:
@@ -204,16 +225,20 @@ def _parse_document(text: str) -> tuple[ConnectorInstance, list[str]]:
         if not any(cells):
             continue
         if len(cells) != len(headers):
-            raise ValueError(f"{line_number}행: 표의 열 개수가 맞지 않습니다.")
+            raise ValueError(
+                f"{line_number}행: 표의 열 개수가 맞지 않습니다. 표 바로 다음에 글을 쓰려면 빈 줄을 넣으세요."
+            )
         try:
-            values = {header: _decode_cell(cell) for header, cell in zip(headers, cells)
-                      if header in ("핀 번호", "신호명", "신호유형", "색상")}
+            values = {key: _decode_cell(cell) for key, cell in zip(keys, cells) if key}
         except ValueError as error:
             raise ValueError(f"{line_number}행: {error}") from error
         name = normalize_signal_name(values.get("신호명", ""))
         signal_type = normalize_signal_type_name(values.get("신호유형", ""))
         color = values.get("색상", "").upper()
         pin = values.get("핀 번호", "")
+        if not name and pin:
+            pin_only.append((line_number, pin))
+            continue
         for valid, label in (
             (is_valid_signal_name(name), "신호명"),
             (not signal_type or is_valid_signal_type_name(signal_type), "신호유형"),
@@ -237,6 +262,11 @@ def _parse_document(text: str) -> tuple[ConnectorInstance, list[str]]:
         else:
             seen_rows.add(pair)
             connector.rows.append(SignalRow(name, pin))
+    if pin_only:
+        warnings.append(
+            f"신호명이 없는 핀 번호 {len(pin_only)}개는 가져오지 않습니다: "
+            + ", ".join(f"{pin}({line_number}행)" for line_number, pin in pin_only)
+        )
     connector.enforce_row_rules()
     for pin in connector.duplicate_pins():
         warnings.append(f"핀 번호 {pin}: 서로 다른 신호가 할당된 신호 중복입니다.")
@@ -308,9 +338,8 @@ def apply_markdown_import(
 
 
 def _escape_cell(text: str) -> str:
-    text = html.escape(text, quote=False)
-    punctuation = string.punctuation.translate(str.maketrans("", "", "&;<>"))
-    return re.sub("([" + re.escape(punctuation) + "])", r"\\\1", text)
+    """읽기 쉽도록 표 구분자·역슬래시·백틱과 HTML 특수 문자만 바꾼다."""
+    return re.sub(r"([\\|`])", r"\\\1", html.escape(text, quote=False))
 
 
 def export_connector(connector: ConnectorInstance) -> str:

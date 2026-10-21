@@ -98,7 +98,7 @@ def test_unreadable_sources_do_not_abort_other_files(tmp_path):
 
 
 @pytest.mark.parametrize("row, reason", [
-    ("| 1 | | | |", "신호명"),
+    ("| | | POWER | |", "신호명"),
     ("| 1 | BAD NAME | | |", "신호명"),
     ("| 1 | _BAD | | |", "신호명"),
     ("| 1 | A | 2BAD | |", "신호유형"),
@@ -130,7 +130,7 @@ def test_extended_signal_names_use_model_rules(tmp_path):
     assert list(item.connector.signals) == [name.upper() for name in names]
 
 
-@pytest.mark.parametrize("identifier", ["1J", "J-1", "J 1", "J/1", "J.1", "J#1", "J" * 33, "`J1`"])
+@pytest.mark.parametrize("identifier", ["1J", "J-1", "J 1", "J/1", "J.1", "J#1", "J" * 33, "`J 1`"])
 def test_invalid_explicit_identifier_is_not_repaired(tmp_path, identifier):
     from jeonnector.markdown_exchange import prepare_markdown_import
 
@@ -472,3 +472,67 @@ def test_unmatched_backtick_run_does_not_turn_comment_into_code(tmp_path):
     [item] = prepare_markdown_import([document(tmp_path, text)], Project())
     assert item.error == ""
     assert list(item.connector.signals) == ["REAL"]
+
+
+@pytest.mark.parametrize("pin_header, type_header", [("핀번호", "신호 유형"), ("핀  번호", "신호유형 ")])
+def test_headers_ignore_spacing(tmp_path, pin_header, type_header):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    text = f"| {pin_header} | 신 호 명 | {type_header} |\n| --- | --- | --- |\n| 1 | VCC | POWER |\n"
+    [item] = prepare_markdown_import([document(tmp_path, text)], Project())
+    assert item.error == ""
+    assert item.warnings == []
+    assert item.connector.rows[0].pin_designator == "1"
+    assert item.connector.signals["VCC"].signal_type == "POWER"
+
+
+def test_unknown_columns_are_reported_as_warning(tmp_path):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    text = "| 핀 번호 | 신호명 | 비고 | |\n| --- | --- | --- | --- |\n| 1 | VCC | 확인 | |\n"
+    [item] = prepare_markdown_import([document(tmp_path, text)], Project())
+    assert item.error == ""
+    assert item.warnings == ["1행: 인식하지 못한 열은 무시합니다: 비고, (빈 제목)"]
+    assert item.connector.rows[0].pin_designator == "1"
+
+
+def test_pin_only_rows_are_skipped_with_one_warning(tmp_path):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    text = ("| 핀 번호 | 신호명 | 신호유형 | 색상 |\n| --- | --- | --- | --- |\n"
+            "| 1 | VCC | | |\n| 2 | | | |\n| 3 | GND | | |\n| A B | | POWER | |\n")
+    [item] = prepare_markdown_import([document(tmp_path, text)], Project())
+    assert item.error == ""
+    assert [(row.pin_designator, row.signal_name) for row in item.connector.rows] == [("1", "VCC"), ("3", "GND")]
+    assert item.warnings == ["신호명이 없는 핀 번호 2개는 가져오지 않습니다: 2(4행), A B(6행)"]
+
+
+@pytest.mark.parametrize("line", ["- **식별자** : J7", "* __식별자__: J7", "- 식별자 : `j7`"])
+def test_identifier_accepts_bold_label_and_code_value(tmp_path, line):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    [item] = prepare_markdown_import([document(tmp_path, f"{line}\n\n| 신호명 |\n| --- |\n| A |\n")], Project())
+    assert item.error == ""
+    assert item.connector.designator == "J7"
+
+
+def test_export_keeps_common_pin_text_readable():
+    from jeonnector.markdown_exchange import export_connector
+    from jeonnector.model import ConnectorInstance, SignalDefinition, SignalRow
+
+    pins = ["A-1", "1.2", "B_3", "C*4", "D+", "E#"]
+    connector = ConnectorInstance("J1", signals={f"S{i}": SignalDefinition(f"S{i}") for i in range(len(pins))},
+                                  rows=[SignalRow(f"S{i}", pin) for i, pin in enumerate(pins)])
+    text = export_connector(connector)
+    assert "\\" not in text
+    for pin in pins:
+        assert f"| {pin} |" in text
+
+
+def test_paragraph_right_after_table_explains_blank_line(tmp_path):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    text = "| 핀 번호 | 신호명 |\n| --- | --- |\n| 1 | VCC |\n비고: 확인 필요\n"
+    [item] = prepare_markdown_import([document(tmp_path, text)], Project())
+    assert item.connector is None
+    assert "4행" in item.error and "빈 줄" in item.error

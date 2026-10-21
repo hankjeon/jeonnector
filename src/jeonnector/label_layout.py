@@ -75,8 +75,8 @@ class LabelPlacement:
 
 
 def split_two_lines(text: str) -> tuple[str, str]:
-    """밑줄 뒤에서 두 줄 길이가 비슷해지게 나눈다. 밑줄이 없으면 가운데에서 나눈다."""
-    cuts = [i + 1 for i, ch in enumerate(text[:-1]) if ch == "_"]
+    """밑줄·빗금 뒤에서 두 줄 길이가 비슷해지게 나눈다. 둘 다 없으면 가운데에서 나눈다."""
+    cuts = [i + 1 for i, ch in enumerate(text[:-1]) if ch in "_/"]
     middle = len(text) / 2.0
     cut = min(cuts, key=lambda c: abs(c - middle)) if cuts else max(1, len(text) // 2)
     return text[:cut], text[cut:]

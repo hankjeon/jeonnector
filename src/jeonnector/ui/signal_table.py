@@ -451,7 +451,7 @@ class SignalTablePanel(QWidget):
                 SIGNAL_NAME_ERROR,
                 self.draft_name_combo,
             )
-        if not self.connector.validate_pin_designator(self.draft.pin, self.part):
+        if not self.connector.validate_pin_designator(self.draft.pin):
             return self._draft_error(PIN_NUMBER_ERROR, self.draft_pin_combo)
         existing = self.connector.get_signal(self.draft.name)
         if (not existing and self.draft.signal_type
@@ -462,7 +462,7 @@ class SignalTablePanel(QWidget):
 
         def add() -> bool:
             if not self.connector.add_signal_row(
-                name, pin, self.part, self.draft.signal_type, self.draft.color,
+                name, pin, self.draft.signal_type, self.draft.color,
             ):
                 return False
             if not existing and self.draft.signal_type:
@@ -612,7 +612,7 @@ class SignalTablePanel(QWidget):
                         and not self.part.has_pin(sig_row.pin_designator)):
                     pin_item.setBackground(QBrush(QColor(PART_MISMATCH_CELL_BG_COLOR)))
                     warnings.append(
-                        f"부품 불일치: 현재 부품({self.part.name})에 핀 번호 '{sig_row.pin_designator}'이 없습니다."
+                        f"부품 불일치: 현재 부품({self.part.name})에 없는 핀 번호입니다: '{sig_row.pin_designator}'"
                     )
                 if r_idx in dup_rows:
                     pin_item.setBackground(
@@ -722,7 +722,7 @@ class SignalTablePanel(QWidget):
 
         if col == COL_PIN:
             raw_pin = "" if text == "미할당" else text
-            if not self.connector.validate_pin_designator(raw_pin, self.part):
+            if not self.connector.validate_pin_designator(raw_pin):
                 msg = PIN_NUMBER_ERROR
                 self.statusMessage.emit(msg)
                 QMessageBox.warning(self, "유효하지 않은 핀 번호", msg)
@@ -730,7 +730,7 @@ class SignalTablePanel(QWidget):
                 return False
 
             sig_name_for_pin = self.connector.rows[row].signal_name
-            self.connector.set_row_pin(row, raw_pin, self.part)
+            self.connector.set_row_pin(row, raw_pin)
             self.refresh_table(preserve_row_id=row_id)
             self.dataChanged.emit(f"핀 번호 변경: {sig_name_for_pin}")
             self._emit_current_row_pin_selection(self.table.currentRow())

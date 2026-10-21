@@ -226,3 +226,16 @@ def test_real_preview_registers_two_files_with_one_undo(qtbot, tmp_path):
     assert window.undo()
     assert not window.project.connectors
     assert not window.commands.can_undo()
+
+
+def test_preview_shows_pin_only_warning_for_real_file(qtbot, tmp_path):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+    from jeonnector.model import Project
+    from jeonnector.ui.markdown_dialog import MarkdownImportDialog
+
+    path = tmp_path / 'pins.md'
+    path.write_text('| 핀 번호 | 신호명 |\n| --- | --- |\n| 1 | VCC |\n| 2 | |\n', encoding='utf-8')
+    dialog = MarkdownImportDialog(prepare_markdown_import([path], Project()))
+    qtbot.addWidget(dialog)
+    assert '신호명이 없는 핀 번호 1개' in dialog.table.item(0, 4).text()
+    assert len(dialog.selected_items()) == 1

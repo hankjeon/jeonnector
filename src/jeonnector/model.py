@@ -487,12 +487,12 @@ class ConnectorInstance:
 
     def add_signal_row(
         self, signal_name: str, pin_designator: str,
-        part: ConnectorPart | None, signal_type: str = "", color: str = "",
+        signal_type: str = "", color: str = "",
     ) -> bool:
         """입력 중인 행을 모두 검증한 뒤 신호와 할당을 함께 추가한다."""
         if not is_valid_signal_name(signal_name):
             return False
-        if not self.validate_pin_designator(pin_designator, part):
+        if not self.validate_pin_designator(pin_designator):
             return False
         name = normalize_signal_name(signal_name)
         if name not in self.signals:
@@ -572,9 +572,7 @@ class ConnectorInstance:
             self.signals.pop(removed.signal_name, None)
         return True
 
-    def validate_pin_designator(
-        self, pin_designator: str, part: ConnectorPart | None
-    ) -> bool:
+    def validate_pin_designator(self, pin_designator: str) -> bool:
         """핀 번호 유효성 검사 (제3.9절).
 
         빈 문자열("") 또는 '미할당'은 할당 해제로 허용한다.
@@ -584,12 +582,7 @@ class ConnectorInstance:
             return True
         return is_valid_pin_number_format(pin_designator)
 
-    def set_row_pin(
-        self,
-        row_index: int,
-        pin_designator: str,
-        part: ConnectorPart | None,
-    ) -> bool:
+    def set_row_pin(self, row_index: int, pin_designator: str) -> bool:
         """신호표 행에 핀 번호를 할당하거나 해제한다 (제3.6절 행 규칙 적용).
 
         - 여러 핀에 할당된 신호의 한 핀을 해제하면 그 행은 사라진다.
@@ -600,7 +593,7 @@ class ConnectorInstance:
             return False
         if pin_designator == "미할당":
             pin_designator = ""
-        if not self.validate_pin_designator(pin_designator, part):
+        if not self.validate_pin_designator(pin_designator):
             return False
 
         target_row = self.rows[row_index]

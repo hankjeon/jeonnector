@@ -15,7 +15,7 @@ from jeonnector.storage import load_project, save_project
 def test_extended_signal_names(name):
     assert is_valid_signal_name(name)
     conn = Project().add_connector("J1")
-    assert conn.add_signal_row(name, "", None)
+    assert conn.add_signal_row(name, "")
     assert conn.rows[0].signal_name == name.strip().upper()
 
 
@@ -49,15 +49,15 @@ def test_pin_numbers_are_independent_of_part(with_part, tmp_path):
     part = create_default_parts()[0] if with_part else None
     conn = project.add_connector("J1", part)
     for pin in ("A10", "a", "A2", "A"):
-        assert conn.add_signal_row("+5V", pin, part, "POWER", "#123456")
-    assert conn.add_signal_row("DATA+", "A", part)
-    assert conn.add_signal_row("SPARE", "", part)
-    assert conn.set_row_pin(1, "a1", part)
+        assert conn.add_signal_row("+5V", pin, "POWER", "#123456")
+    assert conn.add_signal_row("DATA+", "A")
+    assert conn.add_signal_row("SPARE", "")
+    assert conn.set_row_pin(1, "a1")
     assert conn.duplicate_pin_count() == 1
     for pin in ("A 1", " 1", "1 ", "\t1", "1\n"):
         before = conn.to_dict()
-        assert not conn.add_signal_row("NEW", pin, part)
-        assert not conn.set_row_pin(0, pin, part)
+        assert not conn.add_signal_row("NEW", pin)
+        assert not conn.set_row_pin(0, pin)
         assert conn.to_dict() == before
     path = tmp_path / "independent.jnc"
     save_project(project, path)
@@ -74,9 +74,9 @@ def test_pin_numbers_are_independent_of_part(with_part, tmp_path):
 def test_part_selection_replacement_and_detachment_preserve_rows():
     project = Project()
     conn = project.add_connector("J1")
-    assert conn.add_signal_row("GND", "1", None, "GROUND", "#123456")
-    assert conn.add_signal_row("GND", "A", None)
-    assert conn.add_signal_row("SPARE", "", None)
+    assert conn.add_signal_row("GND", "1", "GROUND", "#123456")
+    assert conn.add_signal_row("GND", "A")
+    assert conn.add_signal_row("SPARE", "")
     original = [(r.row_id, r.signal_name, r.pin_designator) for r in conn.rows]
     for part in (*create_default_parts()[:2], None):
         assert project.change_connector_part("J1", part)
@@ -90,8 +90,8 @@ def test_same_uuid_pin_removal_and_restore_preserve_rows():
     project = Project()
     part = create_default_parts()[0]
     conn = project.add_connector("J1", part)
-    assert conn.add_signal_row("GND", "1", part)
-    assert conn.add_signal_row("GND", "2", part)
+    assert conn.add_signal_row("GND", "1")
+    assert conn.add_signal_row("GND", "2")
     original = conn.to_dict()
     updated = part.clone()
     updated.pins = [p for p in updated.pins if p.designator != "2"]
@@ -107,7 +107,7 @@ def test_pinmap_rejects_nonphysical_pins(with_part):
     project = Project()
     part = create_default_parts()[0] if with_part else None
     conn = project.add_connector("J1", part)
-    assert conn.add_signal_row("GND", "", part)
+    assert conn.add_signal_row("GND", "")
     before = conn.to_dict()
     assert not conn.assign_signal_from_pinmap("999", "GND", part)
     assert conn.to_dict() == before
@@ -117,7 +117,7 @@ def test_natural_sort_preserves_non_decimal_numeric_pin_names(tmp_path):
     project = Project()
     conn = project.add_connector("J1")
     for pin in ("A²", "①", "A10", "A2"):
-        assert conn.add_signal_row("DATA", pin, None)
+        assert conn.add_signal_row("DATA", pin)
     conn.sort_rows("pin")
     assert [row.pin_designator for row in conn.rows] == ["A2", "A10", "A²", "①"]
     path = tmp_path / "numeric.jnc"

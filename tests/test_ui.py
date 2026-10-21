@@ -496,7 +496,7 @@ def test_signal_labels_auto_placed_with_size_cap(qapp: QApplication, tmp_path: P
     conn = win.current_connector
     names = {pin.designator: f"HEATER_POWER_28V_MAIN_{pin.designator}" for pin in part.pins}
     for des, name in names.items():
-        conn.add_signal_row(name, des, part)
+        conn.add_signal_row(name, des)
     canvas = win.pinmap_panel.canvas
 
     def labels_at(zoom: float) -> dict[str, list[tuple[str, int, float]]]:
