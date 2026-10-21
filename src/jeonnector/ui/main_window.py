@@ -1037,25 +1037,33 @@ class MainWindow(QMainWindow):
     def export_markdown_dialog(
         self, all_connectors: bool = False, template: bool = False
     ) -> None:
-        from jeonnector.markdown_exchange import MARKDOWN_TEMPLATE, export_connector
+        from jeonnector.markdown_exchange import (
+            MARKDOWN_TEMPLATE, export_connector, markdown_file_name,
+        )
 
         if not template and not self._prepare_signal_exchange():
             return
+        designators = {conn.designator for conn in self.project.connectors}
+        renamed = []
         if all_connectors:
             if not self.project.connectors:
                 return
             folder = QFileDialog.getExistingDirectory(self, "전체 연결기 마크다운 내보내기")
             if not folder:
                 return
-            outputs = [(Path(folder) / f"{conn.designator}.md", export_connector(conn))
-                       for conn in self.project.sorted_connectors()]
+            outputs = []
+            for conn in self.project.sorted_connectors():
+                file_name = markdown_file_name(conn.designator, designators)
+                if file_name != f"{conn.designator}.md":
+                    renamed.append(f"{conn.designator} → {file_name}")
+                outputs.append((Path(folder) / file_name, export_connector(conn)))
         else:
             conn = self.current_connector
             if template:
                 default = "신호표_템플릿.md"
                 content = MARKDOWN_TEMPLATE
             elif conn is not None:
-                default = f"{conn.designator}.md"
+                default = markdown_file_name(conn.designator, designators)
                 content = export_connector(conn)
             else:
                 return
@@ -1088,10 +1096,18 @@ class MainWindow(QMainWindow):
                 written += 1
             except OSError as exc:
                 failures.append(f"{path}: {exc}")
+        notice = (
+            "\n\nWindows 예약 이름이라 파일명에 밑줄을 붙였습니다(식별자는 그대로):\n"
+            + "\n".join(renamed)
+        ) if renamed else ""
         if failures:
             QMessageBox.warning(
                 self, "마크다운 내보내기 결과",
-                f"성공 {written}개 / 실패 {len(failures)}개\n" + "\n".join(failures),
+                f"성공 {written}개 / 실패 {len(failures)}개\n" + "\n".join(failures) + notice,
+            )
+        elif notice:
+            QMessageBox.information(
+                self, "마크다운 내보내기 결과", f"성공 {written}개" + notice
             )
         self.statusBar().showMessage(
             f"마크다운 저장: 성공 {written}개 / 실패 {len(failures)}개", 5000

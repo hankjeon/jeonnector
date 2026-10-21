@@ -337,6 +337,27 @@ def apply_markdown_import(
     return [connector.designator for connector in connectors]
 
 
+WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"{device}{number}" for device in ("COM", "LPT") for number in range(10)}
+)
+
+
+def markdown_file_name(designator: str, designators: set[str]) -> str:
+    """식별자 기반 내보내기 파일명.
+
+    Windows 예약 이름(`CON`, `AUX`, `COM1` 등)은 확장자를 붙여도 파일을 만들 수 없으므로
+    다른 식별자(designators)와 겹치지 않을 때까지 밑줄을 붙인다. 가져오기는 문서 안의
+    식별자를 읽으므로 파일명이 달라도 식별자는 그대로 복원된다.
+    """
+    stem = designator
+    if stem.upper() in WINDOWS_RESERVED_NAMES:
+        stem += "_"
+        while stem in designators:
+            stem += "_"
+    return f"{stem}.md"
+
+
 def _escape_cell(text: str) -> str:
     """읽기 쉽도록 표 구분자·역슬래시·백틱과 HTML 특수 문자만 바꾼다."""
     return re.sub(r"([\\|`])", r"\\\1", html.escape(text, quote=False))

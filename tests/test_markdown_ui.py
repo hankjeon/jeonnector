@@ -239,3 +239,27 @@ def test_preview_shows_pin_only_warning_for_real_file(qtbot, tmp_path):
     qtbot.addWidget(dialog)
     assert '신호명이 없는 핀 번호 1개' in dialog.table.item(0, 4).text()
     assert len(dialog.selected_items()) == 1
+
+
+def test_export_renames_windows_reserved_file_names(qtbot, tmp_path, monkeypatch):
+    from jeonnector.markdown_exchange import prepare_markdown_import
+
+    window = make_window(qtbot, tmp_path)
+    for designator in ('AUX', 'AUX_', 'J1'):
+        window.add_connector(designator)
+    out = tmp_path / 'out'
+    out.mkdir()
+    monkeypatch.setattr(QFileDialog, 'getExistingDirectory', lambda *a, **k: str(out))
+    reports = []
+    monkeypatch.setattr(QMessageBox, 'information', lambda parent, title, message: reports.append(message))
+    window.export_markdown_dialog(all_connectors=True)
+    assert sorted(p.name for p in out.iterdir()) == ['AUX_.md', 'AUX__.md', 'J1.md']
+    assert len(reports) == 1 and 'AUX → AUX__.md' in reports[0]
+    items = prepare_markdown_import([out / 'AUX__.md'], window.project)
+    assert items[0].connector.designator == 'AUX_1'  # 문서 안의 식별자 AUX를 읽고 충돌 접미사를 붙인다
+
+    window._refresh_sidebar(select_designator='AUX')
+    defaults = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda parent, title, default, *a, **k: (defaults.append(default), ('', ''))[1])
+    window.export_markdown_dialog()
+    assert defaults == ['AUX__.md']

@@ -536,3 +536,17 @@ def test_paragraph_right_after_table_explains_blank_line(tmp_path):
     [item] = prepare_markdown_import([document(tmp_path, text)], Project())
     assert item.connector is None
     assert "4행" in item.error and "빈 줄" in item.error
+
+
+@pytest.mark.parametrize("designator, others, expected", [
+    ("J1", set(), "J1.md"),
+    ("AUX", set(), "AUX_.md"),
+    ("COM1", {"COM1_"}, "COM1__.md"),
+    ("LPT0", set(), "LPT0_.md"),
+    ("CON_1", set(), "CON_1.md"),
+    ("COM10", set(), "COM10.md"),
+])
+def test_markdown_file_name_avoids_windows_reserved_names(designator, others, expected):
+    from jeonnector.markdown_exchange import markdown_file_name
+
+    assert markdown_file_name(designator, others | {designator}) == expected
