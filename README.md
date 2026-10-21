@@ -1,4 +1,4 @@
-# 전연결기 (jeonnector)
+# JEONNECTOR 전연결기
 
 **전연결기(jeonnector)**는 연결기(Connector)의 물리적 핀 배치와 각 핀에 할당된 신호(Signal)를 시각적으로 확인하고 편집하는 핀맵(Pinmap) 설계·조회 프로그램입니다.
 
