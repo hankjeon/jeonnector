@@ -42,6 +42,7 @@ from jeonnector.model import (
     normalize_signal_name,
 )
 from jeonnector.storage import PartLibrary, load_project, save_project
+from jeonnector.ui.about_dialog import APP_TITLE, AboutDialog
 from jeonnector.ui.connector_editor import ConnectorEditorWidget
 from jeonnector.ui.markdown_dialog import MarkdownImportDialog
 from jeonnector.ui.pinmap_canvas import PinmapPanel
@@ -156,7 +157,7 @@ class MainWindow(QMainWindow):
         self._syncing_sidebar = False
         self._editor_entry_part_snapshots: dict[str, ConnectorPart] = {}
 
-        self.setWindowTitle("전연결기 (jeonnector) - 새 프로젝트")
+        self.setWindowTitle(f"{APP_TITLE} - 새 프로젝트")
         self.resize(1360, 820)
 
         self._build_menus_and_toolbar()
@@ -272,6 +273,11 @@ class MainWindow(QMainWindow):
         self.reset_layout_act.triggered.connect(self.reset_window_layout)
         view_menu.addAction(self.reset_layout_act)
         view_menu.addSeparator()
+
+        help_menu = menubar.addMenu("도움말(&H)")
+        self.about_act = QAction("전연결기 정보(&A)…", self)
+        self.about_act.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(self.about_act)
 
         self.main_toolbar = QToolBar("메인 도구 모음", self)
         self.main_toolbar.setMovable(False)
@@ -566,7 +572,7 @@ class MainWindow(QMainWindow):
             else self.project.name
         )
         star = " *" if self.is_dirty else ""
-        self.setWindowTitle(f"전연결기 (jeonnector) - {file_label}{star}")
+        self.setWindowTitle(f"{APP_TITLE} - {file_label}{star}")
 
     def update_status_bar(self) -> None:
         """상태바에 프로젝트 전체의 신호 중복 경고 수(중복 핀 1개 = 경고 1건)를 표시한다 (제3.12절)."""
@@ -1126,6 +1132,9 @@ class MainWindow(QMainWindow):
             raise OSError("파일을 완전히 기록하지 못했습니다.")
         if not target.commit():
             raise OSError(target.errorString())
+
+    def show_about_dialog(self) -> None:
+        AboutDialog(self).exec()
 
     def open_project_dialog(self) -> None:
         if not self._confirm_discard_or_save():
