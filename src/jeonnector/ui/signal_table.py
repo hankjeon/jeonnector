@@ -37,6 +37,7 @@ from jeonnector.model import (
     normalize_signal_name,
     normalize_signal_type_name,
 )
+from jeonnector.ui.color_cell import ColorCellDelegate, readable_text_color
 from jeonnector.ui.signal_type_dialog import (
     pick_signal_type_color,
     prompt_rename_signal_type,
@@ -97,15 +98,6 @@ class UndoPassThroughFilter(QObject):
             if event.matches(QKeySequence.StandardKey.Redo) and not line_edit.isRedoAvailable():
                 return True
         return False
-
-
-def readable_text_color(background: QColor) -> str:
-    luminance = (
-        0.299 * background.red()
-        + 0.587 * background.green()
-        + 0.114 * background.blue()
-    )
-    return "#ffffff" if luminance < 145 else "#0f172a"
 
 
 @dataclass
@@ -271,6 +263,8 @@ class SignalTablePanel(QWidget):
         self.table.setItemDelegateForColumn(COL_PIN, self.delegate)
         self.table.setItemDelegateForColumn(COL_SIGNAL, self.delegate)
         self.table.setItemDelegateForColumn(COL_SIGNAL_TYPE, self.delegate)
+        self.color_delegate = ColorCellDelegate(self.table)
+        self.table.setItemDelegateForColumn(COL_COLOR, self.color_delegate)
 
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
